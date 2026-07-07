@@ -825,8 +825,10 @@ function gibBurst(x, y, power, big, bvx, bvy) {
   // instant splat right at the kill point only makes sense near a surface — for an airborne kill
   // (jetpack grunt, flying supe) the real surface is far below, and the falling blood particles
   // above already land and bake there naturally, so don't also bake one floating at the death point
-  if (inWater(x, y)) {
-    waterBlood(x, y, rand(10,18));   // a kill in the water blooms a big lingering cloud right away
+  if (x > WATER_X && y > GROUND_Y - 45) {
+    // in the water OR right at the surface (swimmer heads, boat gunners sit a few px above the
+    // waterline) — bloom the lingering cloud straight away rather than waiting for droplets to land
+    waterBlood(x, Math.max(y, GROUND_Y + 14), rand(10,18));
     splash(x, 200);
   } else {
     const groundS = surfaceBelow(x, y);
