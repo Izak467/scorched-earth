@@ -465,7 +465,7 @@ function thunderclap() {
     if (dist2(cxw, RAIL_Y-16, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
   }
   // detonate incoming rockets mid-air
-  for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0.8, true); }
+  for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
   damageCellsInRadius(P.x, P.y, 140, 0.7);
   panicNear(P.x, 800);
 }
@@ -476,7 +476,8 @@ let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = 
 let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
 let deeps = [], fishes = [], tentacles = [];
 let trains = [], trainWrecks = [], tanks = [], shells = [], sharks = [], rescues = [];
-let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(45,60), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(45,70), deepTimer = rand(50,80);
+let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70);
+let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
 let trainTimer = rand(10,18), tankTimer = rand(25,40), rescueTimer = rand(14,24);
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
 let boltLockout = 0;   // Starlight can't fire another electric bolt until this clears — prevents chain-stunning
@@ -814,6 +815,7 @@ function collapseBuilding(b) {
     splash(b.x + rand(0, b.w), 700);
     for (let k=0;k<20;k++) bubbleAt(b.x + rand(0, b.w), GROUND_Y + rand(10, 120));
     waterBlood(b.x + b.w/2, GROUND_Y + 60, 30);
+    waterMayhem += 10;   // sinking a ship piece is the loudest possible knock on The Deep's door
   } else {
     dcx.clearRect(b.x*DS, 0, b.w*DS, (GROUND_Y-58)*DS);
     // permanent rubble pile baked at the base — like blood, this never fades — instead of a flat
@@ -881,7 +883,12 @@ function heliDeath(h) {
   if (h.dead) return;
   h.dead = true; h.falling = true; h.hp = 0;
   addKill(); addDamage(3.2e6);
-  explode(h.x, h.y, 46, 0.4);
+  // no explosion at the kill — it catches fire and drops; the explosion is the crash
+  for (let i=0;i<10;i++) sparks.push({ x: h.x+rand(-20,20), y: h.y+rand(-10,10),
+    vx: rand(-160,160), vy: rand(-140,40), life: rand(0.2,0.5), c: ['#ffdd66','#ff8833','#ff4422'][randi(0,2)] });
+  for (let i=0;i<5;i++) smokes.push({ x: h.x+rand(-14,14), y: h.y, r: rand(8,16),
+    vr: rand(20,36), vy: rand(-30,0), life: rand(0.5,0.9), c: 'rgba(80,72,84,' });
+  noiseBurst(0.3, 700, 0.18, 'bandpass'); shake(6);
   h.vy = -60; h.vx = rand(-80,80);
 }
 
@@ -909,6 +916,7 @@ function gibBurst(x, y, power, big, bvx, bvy) {
     // waterline) — bloom the lingering cloud straight away rather than waiting for droplets to land
     waterBlood(x, Math.max(y, GROUND_Y + 14), rand(10,18));
     splash(x, 200);
+    waterMayhem++;   // The Deep is counting
   } else {
     const groundS = surfaceBelow(x, y);
     if (groundS - y < 60) bakeSplat(x, groundS, rand(8,16), '#5e0c0c', 0.55);
@@ -1189,7 +1197,7 @@ function update(dt) {
     }
     for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, ex, ey, beamEndX, beamEndY) < 20) carBoom(car);
     for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
-      r.gone = true; explode(r.x, r.y, 46, 1, true);
+      r.gone = true; explode(r.x, r.y, 46, 0, true);
     }
     for (const j of jets) if (!j.dead && segDist(j.x, j.y, ex, ey, beamEndX, beamEndY) < 40*JET_SCALE) {
       // same durability as a helicopter — the beam burns it down rather than instantly detonating it
@@ -1287,17 +1295,27 @@ function update(dt) {
   heliTimer -= dt;
   const heliCap = Math.min(3, 1 + Math.floor(kills/50));
   if (heliTimer <= 0 && helis.filter(h=>!h.dead).length < heliCap) { spawnHeli(); heliTimer = rand(8, 14); }
-  starlightTimer -= dt;
-  if (starlightTimer <= 0 && kills > 60 && !supes.some(s=>s.boss)) { spawnStarlight(); starlightTimer = rand(55, 85); }
+  // villain timers only start ticking once their kill threshold is reached — hitting the
+  // milestone kicks off the countdown, it isn't running quietly since the start of the game
+  if (kills > 150) {
+    starlightTimer -= dt;
+    if (starlightTimer <= 0 && !supes.some(s=>s.boss)) { spawnStarlight(); starlightTimer = rand(55, 85); }
+  }
   jetTimer -= dt;
   if (jetTimer <= 0 && jets.filter(j=>!j.dead).length < 2) { spawnJet(); jetTimer = rand(18, 30); }
-  atrainTimer -= dt;
-  if (atrainTimer <= 0 && kills > 40 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
-  maeveTimer -= dt;
-  if (maeveTimer <= 0 && kills > 80 && maeves.length === 0) { spawnMaeve(); maeveTimer = rand(65, 95); }
-  deepTimer -= dt;
-  // The Deep only stirs when you're actually out over (or near) his water
-  if (deepTimer <= 0 && kills > 100 && deeps.length === 0 && P.x > WATER_X - VW*0.6) { spawnDeep(); deepTimer = rand(60, 90); }
+  if (kills > 50) {
+    atrainTimer -= dt;
+    if (atrainTimer <= 0 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
+  }
+  if (kills > 250) {
+    maeveTimer -= dt;
+    if (maeveTimer <= 0 && maeves.length === 0) { spawnMaeve(); maeveTimer = rand(65, 95); }
+  }
+  // The Deep has no kill gate — he stirs once you've made enough carnage in HIS water
+  if (waterMayhem > 25) {
+    deepTimer -= dt;
+    if (deepTimer <= 0 && deeps.length === 0 && P.x > WATER_X - VW*0.6) { spawnDeep(); deepTimer = rand(50, 80); }
+  }
 
   // ── grunts (ground + jetpack) ──
   for (const g of grunts) {
@@ -1960,8 +1978,10 @@ function update(dt) {
   trainWrecks = trainWrecks.filter(w => !w.gone);
 
   // ── tanks (late-game armor escalation) ──
-  tankTimer -= dt;
-  if (tankTimer <= 0 && kills > 120 && tanks.length < 2) { spawnTank(); tankTimer = rand(28, 45); }
+  if (kills > 500) {
+    tankTimer -= dt;
+    if (tankTimer <= 0 && tanks.length < 2) { spawnTank(); tankTimer = rand(28, 45); }
+  }
   for (const tk of tanks) {
     if (tk.dead) continue;
     tk.t += dt; tk.fireCd -= dt; tk.muzzle -= dt;
@@ -1979,9 +1999,6 @@ function update(dt) {
         vx: Math.cos(tk.turA)*950, vy: Math.sin(tk.turA)*950, life: 2.6 });
       noiseBurst(0.3, 500, 0.2); thump(60, 0.3, 0.25); shake(4);
     }
-    // treads don't stop for pedestrians or parked cars
-    for (const c of civs) if (!c.dead && !c.swim && Math.abs(c.x-tk.x) < 42 && Math.abs(c.y-tk.y) < 24) { c.dead=true; gibBurst(c.x, c.y-8, 1.1); addKill(); }
-    for (const car of cars) if (!car.dead && car.kind !== 'boat' && Math.abs(car.x-tk.x) < 46) carBoom(car);
   }
   tanks = tanks.filter(t => !t.dead);
   for (const sh of shells) {
@@ -1993,7 +2010,9 @@ function update(dt) {
     if (sh.y >= GROUND_Y - 4) boom = true;
     if (cellIntactAt(sh.x, sh.y)) boom = true;
     if (sh.life <= 0) boom = true;
-    if (boom) { explode(sh.x, Math.min(sh.y, GROUND_Y-4), 78, 1, true); sh.life = 0; }
+    // cellFrac 0: tank fire knocks YOU around but never wrecks buildings or kills civilians —
+    // the city's destruction stays entirely Homelander's work
+    if (boom) { explode(sh.x, Math.min(sh.y, GROUND_Y-4), 78, 0, true); sh.life = 0; }
   }
   shells = shells.filter(s => s.life > 0);
 
@@ -2099,7 +2118,7 @@ function update(dt) {
     if (r.y >= GROUND_Y - 6) boom = true;
     if (cellIntactAt(r.x, r.y)) boom = true;
     if (r.life <= 0) boom = true;
-    if (boom) { r.gone = true; explode(r.x, Math.min(r.y, GROUND_Y-4), 46, 1, true); }
+    if (boom) { r.gone = true; explode(r.x, Math.min(r.y, GROUND_Y-4), 46, 0, true); }   // no building/civilian damage
   }
   rockets = rockets.filter(r => !r.gone);
 
