@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SCORCHED EARTH</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html,body {
+    margin:0; padding:0; background:#0a0912; color:#f2ede2;
+    font-family: Georgia, 'Times New Roman', serif;
+    overflow-x:hidden;
+  }
+  a { color:inherit; }
+
+  .sky {
+    position:fixed; inset:0; z-index:-2;
+    background: linear-gradient(180deg, #141433 0%, #3d2450 40%, #a8433a 72%, #e8843c 100%);
+  }
+  .skyline {
+    position:fixed; left:0; right:0; bottom:0; height:34vh; z-index:-1;
+    background:
+      linear-gradient(180deg, rgba(10,9,18,0) 0%, rgba(10,9,18,0.9) 60%, #0a0912 100%),
+      repeating-linear-gradient(90deg, #171325 0 60px, #1d1830 60px 95px, #14101f 95px 150px);
+    mask-image: linear-gradient(180deg, transparent 0%, black 30%);
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 30%);
+    opacity:0.9;
+  }
+  .ember {
+    position:fixed; bottom:-10px; z-index:0; border-radius:50%;
+    background:#ffb050; box-shadow:0 0 6px 2px rgba(255,150,60,0.7);
+    animation: rise linear infinite; opacity:0.8;
+  }
+  @keyframes rise {
+    0% { transform:translateY(0) translateX(0); opacity:0.9; }
+    100% { transform:translateY(-110vh) translateX(var(--drift,20px)); opacity:0; }
+  }
+
+  .wrap { position:relative; max-width:920px; margin:0 auto; padding:0 20px 60px; }
+
+  /* ── hero ── */
+  .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:56px 16px 8px; gap:14px; }
+  .homelander {
+    width:min(52vw, 260px); border-radius:14px;
+    box-shadow: 0 0 0 1px rgba(255,120,60,0.25), 0 0 40px rgba(255,60,20,0.35), 0 14px 34px rgba(0,0,0,0.6);
+    -webkit-mask-image: linear-gradient(180deg, black 78%, transparent 100%);
+    mask-image: linear-gradient(180deg, black 78%, transparent 100%);
+  }
+  .title {
+    margin:0; font-weight:900; letter-spacing:6px;
+    font-size:clamp(38px, 8.5vw, 96px); line-height:0.95;
+    background:linear-gradient(180deg, #fff6d6 0%, #ffd84d 18%, #ff9d2e 40%, #ff5a1f 62%, #e0311a 82%, #7a160f 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    animation: flicker 2.6s ease-in-out infinite;
+  }
+  @keyframes flicker {
+    0%,100% { filter: drop-shadow(0 0 16px rgba(255,120,40,0.5)) drop-shadow(0 0 40px rgba(255,60,20,0.3)); }
+    45% { filter: drop-shadow(0 0 26px rgba(255,160,60,0.8)) drop-shadow(0 0 58px rgba(255,80,20,0.5)); }
+    60% { filter: drop-shadow(0 0 12px rgba(255,110,40,0.4)) drop-shadow(0 0 30px rgba(255,60,20,0.25)); }
+  }
+  .voice {
+    max-width:560px; font-size:17px; line-height:1.55; font-style:italic;
+    color:rgba(242,237,226,0.9); text-shadow:0 2px 8px rgba(0,0,0,0.6);
+  }
+  .play-btn {
+    display:inline-block; margin-top:6px; text-decoration:none;
+    font-family:Georgia,serif; font-weight:bold; font-size:20px; letter-spacing:3px;
+    color:#1a1206; background:linear-gradient(180deg,#ffdf8a,#ff9d2e);
+    padding:14px 42px; border-radius:8px;
+    box-shadow:0 6px 0 #a85a12, 0 10px 24px rgba(255,120,30,0.4);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .play-btn:hover { transform:translateY(-2px); box-shadow:0 8px 0 #a85a12, 0 14px 30px rgba(255,120,30,0.5); }
+  .play-btn:active { transform:translateY(3px); box-shadow:0 3px 0 #a85a12, 0 6px 14px rgba(255,120,30,0.4); }
+
+  /* ── sections ── */
+  section { margin-top:46px; }
+  h2 {
+    font-size:13px; letter-spacing:5px; color:#ffb340; text-transform:uppercase;
+    border-bottom:1px solid rgba(255,179,64,0.25); padding-bottom:9px; margin:0 0 18px;
+  }
+  .card { background:rgba(20,16,28,0.55); border:1px solid rgba(255,255,255,0.06); border-radius:12px; }
+
+  /* controls: compact key/action rows, no wrap-y sentences */
+  .controls { padding:6px 22px; }
+  .krow {
+    display:flex; align-items:center; gap:14px; padding:11px 0;
+    border-bottom:1px solid rgba(255,255,255,0.05); font-size:14.5px;
+  }
+  .krow:last-child { border-bottom:none; }
+  .key {
+    flex:0 0 auto; min-width:80px; text-align:center; padding:5px 8px;
+    background:#1c1826; border:1px solid rgba(255,255,255,0.15); border-bottom-width:3px;
+    border-radius:6px; font-size:12px; letter-spacing:0.5px; color:#ffe9c2; white-space:nowrap;
+  }
+  .krow span.action { color:rgba(242,237,226,0.8); }
+
+  /* bestiary: compact cards, short lines, fixed rhythm */
+  .bestiary { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+  .beast { padding:16px 18px; }
+  .beast h3 { margin:0 0 4px; font-size:15.5px; color:#f2ede2; }
+  .beast .tag { display:block; font-size:10.5px; letter-spacing:2px; text-transform:uppercase; color:#ff8b6a; margin-bottom:8px; }
+  .beast.boss { border-color:rgba(255,179,64,0.4); box-shadow:0 0 0 1px rgba(255,179,64,0.15) inset; }
+  .beast.boss .tag { color:#ffe14d; }
+  .beast p { margin:0; font-size:13.5px; line-height:1.5; color:rgba(242,237,226,0.82); font-style:italic; }
+
+  footer { margin-top:56px; text-align:center; font-size:12px; letter-spacing:1px; color:rgba(242,237,226,0.4); }
+</style>
+</head>
+<body>
+
+<div class="sky"></div>
+<div class="skyline"></div>
+
+<div class="wrap">
+
+  <div class="hero">
+    <img class="homelander" src="hero.jpg" alt="A menacing caped figure with glowing red eyes, silhouetted against a burning city" />
+
+    <h1 class="title">SCORCHED<br/>EARTH</h1>
+
+    <p class="voice">
+      "I'm going to take this city apart — block by block, person by person — until there's nothing standing and no one left to scream about it.<br/>
+      Not because I hate you. Because I can, and there's no one left who can stop me.<br/>
+      Enjoy the view. It's the last one you get."
+    </p>
+
+    <a class="play-btn" href="game.html">▶ PLAY</a>
+  </div>
+
+  <section>
+    <h2>Controls</h2>
+    <div class="card controls">
+      <div class="krow"><span class="key">WASD / ↑←↓→</span><span class="action">Fly — hold a direction to build up speed</span></div>
+      <div class="krow"><span class="key">Mouse</span><span class="action">Aim</span></div>
+      <div class="krow"><span class="key">Hold Click</span><span class="action">Laser vision — cuts through buildings, enemies, rockets</span></div>
+      <div class="krow"><span class="key">Double-tap dir</span><span class="action">Dash-punch (hold a second direction for diagonals)</span></div>
+      <div class="krow"><span class="key">Double-tap ↓</span><span class="action">Full ground slam — any altitude, straight down</span></div>
+      <div class="krow"><span class="key">Space</span><span class="action">Thunderclap — a shockwave that shoves everything nearby</span></div>
+      <div class="krow"><span class="key">M &nbsp;/&nbsp; P / Esc</span><span class="action">Mute &nbsp;/&nbsp; Pause</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What's Down There</h2>
+    <div class="bestiary">
+      <div class="card beast">
+        <span class="tag">Fodder</span>
+        <h3>Soldiers &amp; Civilians</h3>
+        <p>You people, with your little guns, thinking that levels anything. It never did. Scream anyway — I've earned it.</p>
+      </div>
+      <div class="card beast">
+        <span class="tag">Traffic</span>
+        <h3>Cars, Taxis &amp; Trucks</h3>
+        <p>More things in my way. I have never once needed to slow down for any of you.</p>
+      </div>
+      <div class="card beast">
+        <span class="tag">Airspace</span>
+        <h3>Supes &amp; Helicopters</h3>
+        <p>Other "heroes." The government's toy helicopters. Both think they matter here. Neither does.</p>
+      </div>
+      <div class="card beast">
+        <span class="tag">Scenery</span>
+        <h3>Commercial Jets</h3>
+        <p>Full of people who think altitude keeps them safe from me. I've let a plane fall before and felt nothing. I won't feel anything now.</p>
+      </div>
+      <div class="card beast boss">
+        <span class="tag">Boss</span>
+        <h3>Starlight</h3>
+        <p>She used to stand next to me and smile for the cameras like she'd earned it. Now she just runs. I like her better this way.</p>
+      </div>
+      <div class="card beast boss">
+        <span class="tag">Boss</span>
+        <h3>A-Train</h3>
+        <p>Fast doesn't mean untouchable. It just means I get to enjoy watching him figure that out.</p>
+      </div>
+      <div class="card beast boss">
+        <span class="tag">Boss</span>
+        <h3>Queen Maeve</h3>
+        <p>She grabbed me once. Thought that made her strong. I let her believe that, for a while.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>SCORCHED EARTH — a personal project, not affiliated with anyone's copyrighted anything</footer>
+</div>
+
+<script>
+  const N = 24;
+  for (let i=0;i<N;i++) {
+    const e = document.createElement('div');
+    e.className = 'ember';
+    const size = 2 + Math.random()*3;
+    e.style.width = size+'px';
+    e.style.height = size+'px';
+    e.style.left = (Math.random()*100)+'vw';
+    e.style.setProperty('--drift', (Math.random()*60-30)+'px');
+    e.style.animationDuration = (8 + Math.random()*10)+'s';
+    e.style.animationDelay = (Math.random()*10)+'s';
+    document.body.appendChild(e);
+  }
+</script>
+
+</body>
+</html>
