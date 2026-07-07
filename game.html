@@ -432,10 +432,17 @@ function spawnCar() {
     c: police ? '#20242c' : kind==='taxi' ? '#e8c020' : colors[randi(0,6)],
     y: GROUND_Y + (dir>0 ? 14 : 3), police, panic: 0, dead: false, t: rand(0,9) });
 }
+const SUPE_PALETTES = [
+  ['#1a1a1f','#c0322e'], ['#26203a','#8a5cf5'], ['#0f2a1e','#3ecf6e'],
+  ['#2a1620','#e05590'], ['#12232e','#3ab6d9'], ['#2e2410','#e0a832'],
+];
 function spawnSupe() {
   const side = Math.random()<0.5 ? -1 : 1;
-  const palettes = [['#1a1a1f','#c0322e'], ['#26203a','#8a5cf5'], ['#0f2a1e','#3ecf6e'], ['#2a1620','#e05590']];
-  const pal = palettes[randi(0,palettes.length-1)];
+  // pick a cape color no other living supe is wearing, so a group is always visually distinct
+  const used = supes.filter(s => s.hp > 0 && !s.boss).map(s => s.accent);
+  const free = SUPE_PALETTES.filter(p => !used.includes(p[1]));
+  const pool = free.length ? free : SUPE_PALETTES;
+  const pal = pool[randi(0,pool.length-1)];
   supes.push({ x: clamp(P.x + side*(VW*0.6+200), 100, WORLD_W-100), y: rand(300, 1100),
     vx:0, vy:0, hp: 100, state:'seek', t:0, suit:pal[0], accent:pal[1], smokeT:0, flash:0 });
 }
@@ -457,7 +464,7 @@ function spawnJet() {
   const side = Math.random()<0.5 ? -1 : 1;
   const travelDir = Math.random()<0.5 ? -1 : 1;
   jets.push({ x: clamp(P.x + side*(VW*0.9+500), 300, WORLD_W-300), y: rand(120, 360),
-    vx: travelDir*rand(220,320), dead: false, t: rand(0,9) });
+    vx: travelDir*rand(220,320), hp: 300, dead: false, t: rand(0,9) });
 }
 function jetDeath(j) {
   if (j.dead) return;
@@ -927,7 +934,12 @@ function update(dt) {
     for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
       r.gone = true; explode(r.x, r.y, 46, 1, true);
     }
-    for (const j of jets) if (!j.dead && segDist(j.x, j.y, ex, ey, beamEndX, beamEndY) < 40*JET_SCALE) jetDeath(j);
+    for (const j of jets) if (!j.dead && segDist(j.x, j.y, ex, ey, beamEndX, beamEndY) < 40*JET_SCALE) {
+      // same durability as a helicopter — the beam burns it down rather than instantly detonating it
+      j.hp -= 450*dt;
+      if (Math.random()<0.7) sparks.push({ x:j.x+rand(-30,30), y:j.y+rand(-8,8), vx:rand(-160,160), vy:rand(-120,40), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
+      if (j.hp <= 0) jetDeath(j);
+    }
     for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
       f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
     }
@@ -957,8 +969,8 @@ function update(dt) {
   if (civs.length < 90 && Math.random() < dt*14) spawnCiv();
   if (cars.filter(c=>!c.dead).length < 26 && Math.random() < dt*6) spawnCar();
   supeTimer -= dt;
-  const supeCap = Math.min(4, 1 + Math.floor(kills/40));
-  if (supeTimer <= 0 && supes.length < supeCap) { spawnSupe(); supeTimer = rand(8, 13); }
+  const supeCap = Math.min(6, 1 + Math.floor(kills/25));
+  if (supeTimer <= 0 && supes.filter(s=>!s.boss).length < supeCap) { spawnSupe(); supeTimer = rand(8, 13); }
   heliTimer -= dt;
   const heliCap = Math.min(3, 1 + Math.floor(kills/50));
   if (heliTimer <= 0 && helis.filter(h=>!h.dead).length < heliCap) { spawnHeli(); heliTimer = rand(8, 14); }
@@ -1166,6 +1178,8 @@ function update(dt) {
     j.x += j.vx*dt;
     if (Math.random() < dt*8) smokes.push({ x: j.x - Math.sign(j.vx)*46*JET_SCALE, y: j.y+4, r: rand(10,20),
       vr: rand(8,16), vy: rand(-6,6), life: rand(1.4,2.4), c: 'rgba(225,228,232,' });
+    if (j.hp < 200 && Math.random() < dt*7)
+      smokes.push({ x: j.x+rand(-24,24), y: j.y-4, r: rand(6,12), vr: rand(14,26), vy: rand(-40,-15), life: rand(0.5,1.0), c: 'rgba(70,62,70,' });
     if (dist2(P.x,P.y,j.x,j.y) < (80*JET_SCALE)*(80*JET_SCALE)) jetDeath(j);
   }
   jets = jets.filter(j => !j.dead && Math.abs(j.x-P.x) < VW*3);
