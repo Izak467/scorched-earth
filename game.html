@@ -50,9 +50,9 @@ window.addEventListener('resize', resize); resize();
 // ─── World constants ───
 // zone layout, left to right: city streets 0..CITY_W, working dock CITY_W..WATER_X,
 // then open water out to the world edge. GROUND_Y doubles as the water surface level.
-const WORLD_W = 40000;
-const CITY_W = 32000;
-const WATER_X = 34000;
+const WORLD_W = 36000;
+const CITY_W = 28000;
+const WATER_X = 30000;
 const GROUND_Y = 1660;
 const WATER_FLOOR = GROUND_Y + 520;   // the sea here is shallow — you can dip under, not dive
 const CW = 17, CH = 23;              // structural cell (windows sit on 2x2 blocks)
@@ -127,7 +127,7 @@ const fgBuildings = [];
 })();
 // ─── The docked ship: three adjacent "buildings" (stern hull, bridge tower, bow hull) pushed
 // after the city so fgBuildings stays sorted — all the laser/cell/collapse physics come free.
-const SHIP_X = 34400;
+const SHIP_X = WATER_X + 400;
 const shipPieces = [];
 function makeShipPiece(x, cols, rows, opts) {
   const w = cols*CW, h = rows*CH;
@@ -136,13 +136,13 @@ function makeShipPiece(x, cols, rows, opts) {
     if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
   const b = {x, w, h, cols, rows, roofY: GROUND_Y-h, shade: 0, wins, cells: new Float32Array(cols*rows),
     destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
-    ant: !!(opts&&opts.ant), ac: -1, burning: false, ship: true, bow: !!(opts&&opts.bow)};
+    ant: !!(opts&&opts.ant), ac: -1, burning: false, ship: true, bow: !!(opts&&opts.bow), stern: !!(opts&&opts.stern)};
   fgBuildings.push(b); shipPieces.push(b);
   return b;
 }
 (function genShip(){
   let sx = SHIP_X;
-  const stern = makeShipPiece(sx, 36, 12); sx += stern.w;
+  const stern = makeShipPiece(sx, 36, 12, {stern:true}); sx += stern.w;
   const tower = makeShipPiece(sx, 14, 26, {ant:true}); sx += tower.w;
   makeShipPiece(sx, 34, 12, {bow:true});
 })();
@@ -160,12 +160,12 @@ const containers = [];
 (function genDock(){
   let x = CITY_W + 140;
   while (x < WATER_X - 300) {
-    if (Math.random() < 0.55) {
-      const stack = randi(1, 3);
+    if (Math.random() < 0.8) {
+      const stack = randi(1, 4);
       for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
         c: ['#8a3a2a','#2f6b8a','#3d7a46','#8a7a2f','#5d5d66'][randi(0,4)], dead: false, vy: 0 });
-      x += 158;
-    } else x += rand(100, 240);
+      x += 122;
+    } else x += rand(50, 130);
   }
 })();
 function containerBoom(ct) {
@@ -462,7 +462,7 @@ function thunderclap() {
   for (const t of trains) for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
     const cxw = trainCarX(t, i);
-    if (dist2(cxw, RAIL_Y-16, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
+    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
   }
   // detonate incoming rockets mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
@@ -480,6 +480,8 @@ let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, 
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
 let trainTimer = rand(10,18), tankTimer = rand(25,40), rescueTimer = rand(14,24);
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
+const TRAIN_SCALE = 1.6;         // cars were reading too small against the buildings
+const CAR_SPACE = 118 * TRAIN_SCALE, CAR_HIT_R = 52 * TRAIN_SCALE, CAR_CENTER_OFF = 16 * TRAIN_SCALE;
 let boltLockout = 0;   // Starlight can't fire another electric bolt until this clears — prevents chain-stunning
 let shipRespawnT = 0, sailShip = null;   // the docked-ship respawn cycle: sink → 20s → new one sails in from the right
 
@@ -652,20 +654,20 @@ function spawnTrain() {
   const n = randi(4, 7);
   const cars = [];
   for (let i=0;i<n;i++) cars.push({ hp: 260, dead: false });
-  trains.push({ x: dir>0 ? -n*120-100 : CITY_W + n*120 + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
+  trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
 }
-function trainCarX(t, i) { return t.x - t.dir*i*118; }
+function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
 function trainCarDeath(t, i, cxw) {
   const c = t.cars[i];
   if (c.dead) return;
   c.dead = true;
   addDamage(2.8e6);
-  explode(cxw, RAIL_Y-16, 60, 0, false, 0.7);
+  explode(cxw, RAIL_Y-CAR_CENTER_OFF, 60*TRAIN_SCALE, 0, false, 0.7);
   const tops = ['#7a8fae','#ae7a7a','#7aae8b','#aea77a'];
-  for (let k=0;k<5;k++) fallers.push({ x: cxw+rand(-40,40), y: RAIL_Y-10,
+  for (let k=0;k<5;k++) fallers.push({ x: cxw+rand(-40,40)*TRAIN_SCALE, y: RAIL_Y-10*TRAIN_SCALE,
     vx: t.dir*t.sp*0.3+rand(-50,50), vy: rand(-60,20), skin: '#c8a080', top: tops[randi(0,3)], life: 5, dead: false });
   // the car itself tears off the rail and falls into the street below
-  trainWrecks.push({ x: cxw, y: RAIL_Y-16, vx: t.dir*t.sp*0.45 + rand(-40,40), vy: rand(-60,0),
+  trainWrecks.push({ x: cxw, y: RAIL_Y-CAR_CENTER_OFF, vx: t.dir*t.sp*0.45 + rand(-40,40), vy: rand(-60,0),
     rot: 0, vr: t.dir*rand(1.5,3.5), gone: false });
   shake(12); sfxBoom();
 }
@@ -726,7 +728,9 @@ function destroyCell(b, i, wx, wy, quiet) {
     vx: rand(-140,140), vy: rand(-200,30), rot: rand(0,7), vr: rand(-7,7),
     r: rand(2.5,5.5), c: ['#2e2638','#241e2e','#3a3346'][randi(0,2)], life: rand(1.5,3) });
   if (!quiet) sfxCrack();
-  if (!b.collapsed && b.destroyed > b.cols*b.rows*0.62) collapseBuilding(b);
+  // the ship is stitched together from three huge pieces — hold each to a lower threshold or
+  // sinking the whole thing takes forever compared to a normal building
+  if (!b.collapsed && b.destroyed > b.cols*b.rows*(b.ship ? 0.35 : 0.62)) collapseBuilding(b);
 }
 function killWindowCiv(b, ci, cj) {
   const bc = ci >> 1, br = cj >> 1;
@@ -780,7 +784,7 @@ function runSupport(b) {
         r: rand(6,11), c: ['#2e2638','#241e2e','#3a3346'][randi(0,2)], life: rand(2.5,4), heavy: true });
     }
   }
-  if (fell) { sfxCrack(); if (!b.collapsed && b.destroyed > b.cols*b.rows*0.62) collapseBuilding(b); }
+  if (fell) { sfxCrack(); if (!b.collapsed && b.destroyed > b.cols*b.rows*(b.ship ? 0.35 : 0.62)) collapseBuilding(b); }
   b.dirty = fell;   // cascades keep checking
 }
 function collapseBuilding(b) {
@@ -838,16 +842,25 @@ function collapseBuilding(b) {
 // scale (0-1) trims the particle-heavy visuals for frequent/small blasts (cars) without touching gameplay radius
 function explode(x, y, r, cellFrac, hostile, scale) {
   scale = scale === undefined ? 1 : scale;
-  rings.push({x, y, r: 6, life: 0.45, w: 4});
-  const nSparks = Math.round(26*scale);
-  for (let i=0;i<nSparks;i++) {
-    const a = rand(0,7), sp = rand(60, 420);
-    sparks.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 60, life: rand(0.15,0.5),
-      c: ['#ffdd66','#ff8833','#ff4422'][randi(0,2)] });
+  // hitting the ship/dock structure still fireballs like any building; open water just splashes —
+  // no fire, no smoke plume, nothing that reads as "damage" out where there's nothing to damage
+  const shipHere = x > WATER_X && (() => { const b = findBuildingAt(x); return b && !b.collapsed && !b.collapsing; })();
+  const openWater = x > WATER_X && y > GROUND_Y - 20 && !shipHere;
+  if (!openWater) {
+    rings.push({x, y, r: 6, life: 0.45, w: 4});
+    const nSparks = Math.round(26*scale);
+    for (let i=0;i<nSparks;i++) {
+      const a = rand(0,7), sp = rand(60, 420);
+      sparks.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 60, life: rand(0.15,0.5),
+        c: ['#ffdd66','#ff8833','#ff4422'][randi(0,2)] });
+    }
+    const nSmoke = Math.round(8*scale);
+    for (let i=0;i<nSmoke;i++) smokes.push({ x: x+rand(-14,14), y: y+rand(-14,14), r: rand(10,22),
+      vr: rand(26,50), vy: rand(-50,-15), life: rand(0.5,1.0), c: 'rgba(105,94,106,' });
+  } else {
+    for (let i=0;i<Math.round(6*scale);i++) smokes.push({ x: x+rand(-10,10), y: GROUND_Y-4, r: rand(6,12),
+      vr: rand(18,34), vy: rand(-50,-25), life: rand(0.35,0.7), c: 'rgba(220,230,235,' });
   }
-  const nSmoke = Math.round(8*scale);
-  for (let i=0;i<nSmoke;i++) smokes.push({ x: x+rand(-14,14), y: y+rand(-14,14), r: rand(10,22),
-    vr: rand(26,50), vy: rand(-50,-15), life: rand(0.5,1.0), c: 'rgba(105,94,106,' });
   if (!hostile) {
     for (const g of grunts) if (!g.dead && dist2(g.x,g.y-16,x,y) < r*r) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
     for (const c of civs) if (!c.dead && dist2(c.x,c.y-14,x,y) < r*r) { c.dead=true; gibBurst(c.x,c.y-14,1.1); addKill(); }
@@ -1170,6 +1183,19 @@ function update(dt) {
         stopD = t; hitHeli = h; hitSupe = null; hitB = null;
       }
     }
+    // trains are drawn in front of the buildings behind them, so they need to block the beam
+    // the same way — otherwise the beam visually crosses right over a car without ever "hitting" it
+    let hitTrain = null;
+    for (const tr of trains) {
+      for (let i=0;i<tr.cars.length;i++) {
+        const c = tr.cars[i]; if (c.dead) continue;
+        const cxw = trainCarX(tr, i), cyw = RAIL_Y - CAR_CENTER_OFF;
+        const t = clamp((cxw-ex)*ux + (cyw-ey)*uy, 0, tlen);
+        if (t < stopD && Math.hypot(ex+ux*t - cxw, ey+uy*t - cyw) < CAR_HIT_R) {
+          stopD = t; hitTrain = { tr, i, cxw }; hitHeli = null; hitSupe = null; hitB = null;
+        }
+      }
+    }
     beamEndX = ex + ux*stopD; beamEndY = ey + uy*stopD;
     const DPS = 315;
     if (hitB && hitI >= 0) {
@@ -1187,6 +1213,11 @@ function update(dt) {
       h.hp -= 450*dt; h.hurt = 0.1;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-6,6), y:beamEndY+rand(-6,6), vx:rand(-160,160), vy:rand(-180,20), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
       if (h.hp <= 0) heliDeath(h);
+    } else if (hitTrain) {
+      const c = hitTrain.tr.cars[hitTrain.i];
+      c.hp -= 450*dt;
+      if (Math.random()<0.6) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
+      if (c.hp <= 0) trainCarDeath(hitTrain.tr, hitTrain.i, hitTrain.cxw);
     }
     // fodder caught anywhere along the (possibly shortened) beam still melts
     for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, ex, ey, beamEndX, beamEndY) < 16) {
@@ -1210,15 +1241,6 @@ function update(dt) {
     }
     for (const ct of containers) if (!ct.dead && segDist(ct.x+ct.w/2, ct.y+ct.h/2, ex, ey, beamEndX, beamEndY) < 56) containerBoom(ct);
     for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
-    for (const t of trains) for (let i=0;i<t.cars.length;i++) {
-      const c = t.cars[i]; if (c.dead) continue;
-      const cxw = trainCarX(t, i);
-      if (segDist(cxw, RAIL_Y-16, ex, ey, beamEndX, beamEndY) < 52) {
-        c.hp -= 450*dt;
-        if (Math.random()<0.6) sparks.push({x:cxw+rand(-30,30),y:RAIL_Y-16+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
-        if (c.hp <= 0) trainCarDeath(t, i, cxw);
-      }
-    }
     for (const tk of tanks) if (!tk.dead && segDist(tk.x, tk.y-20, ex, ey, beamEndX, beamEndY) < 34) {
       tk.hp -= 450*dt;
       if (Math.random()<0.6) sparks.push({x:tk.x+rand(-16,16),y:tk.y-20,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
@@ -1956,12 +1978,12 @@ function update(dt) {
       const c = t.cars[i]; if (c.dead) continue;
       const cxw = trainCarX(t, i);
       // plowing into a car (flying or dashing) wrecks it
-      if (dist2(P.x, P.y, cxw, RAIL_Y-16) < 66*66) trainCarDeath(t, i, cxw);
+      if (dist2(P.x, P.y, cxw, RAIL_Y-CAR_CENTER_OFF) < (66*TRAIN_SCALE)*(66*TRAIN_SCALE)) trainCarDeath(t, i, cxw);
     }
   }
   trains = trains.filter(t => {
     if (!t.cars.some(c => !c.dead)) return false;
-    const tail = t.x - t.dir*(t.cars.length-1)*118;
+    const tail = t.x - t.dir*(t.cars.length-1)*CAR_SPACE;
     return t.dir > 0 ? tail < CITY_W + 300 : tail > -300;
   });
   // wrecked cars tear off the rail and crash into the street below
@@ -2367,14 +2389,20 @@ function drawCity() {
         cx.stroke();
       }
     }
-    // windows (on 2x2 cell blocks) + window civilians
+    // windows (on 2x2 cell blocks) + window civilians — round portholes on the ship, square windows elsewhere
     for (const w of b.wins) {
       const i0 = (w.r*2)*b.cols + w.c*2;
       if (b.cells[i0] >= 1 || b.cells[i0+1] >= 1 ||
           b.cells[i0+b.cols] >= 1 || b.cells[i0+b.cols+1] >= 1) continue;
       const wx = x + 9 + w.c*CW*2, wy = y + 12 + w.r*CH*2;
       cx.fillStyle = w.warm ? 'rgba(255,190,90,0.85)' : 'rgba(140,200,235,0.5)';
-      cx.fillRect(wx, wy, 16, 22);
+      if (b.ship) {
+        cx.beginPath(); cx.arc(wx+8, wy+11, 7, 0, 7); cx.fill();
+        cx.strokeStyle = 'rgba(10,10,14,0.6)'; cx.lineWidth = 1.5;
+        cx.beginPath(); cx.arc(wx+8, wy+11, 7, 0, 7); cx.stroke();
+      } else {
+        cx.fillRect(wx, wy, 16, 22);
+      }
       if (w.civ && !w.civDead) {
         cx.fillStyle = 'rgba(20,14,24,0.9)';
         cx.beginPath(); cx.arc(wx+8, wy+9, 3.4, 0, 7); cx.fill();
@@ -2384,22 +2412,50 @@ function drawCity() {
     cx.fillStyle = 'rgba(0,0,0,0.5)';
     cx.fillRect(x, y, b.w, 5);
     if (b.ship) {
-      // red waterline stripe along the hull, and the bow taper past the last piece
+      // hull belly: a gentle downward bulge below the waterline so the ship reads as a hull
+      // sitting in the water rather than a building that happens to be near the dock
+      const gyS = GROUND_Y - camY;
+      cx.fillStyle = '#262c36';
+      cx.beginPath();
+      cx.moveTo(x, gyS - 12);
+      cx.quadraticCurveTo(x + b.w/2, gyS + 22, x + b.w, gyS - 12);
+      cx.lineTo(x + b.w, gyS - 12); cx.lineTo(x, gyS - 12);
+      cx.closePath(); cx.fill();
+      // red waterline stripe along the hull
       cx.fillStyle = '#7a1e1e';
-      cx.fillRect(x, GROUND_Y - camY - 12, b.w, 9);
+      cx.fillRect(x, gyS - 12, b.w, 9);
+      // deck rail along the top edge
+      cx.strokeStyle = 'rgba(200,200,210,0.35)'; cx.lineWidth = 2;
+      cx.beginPath(); cx.moveTo(x, y+2); cx.lineTo(x+b.w, y+2); cx.stroke();
       if (b.bow) {
         cx.fillStyle = '#323a46';
         cx.beginPath();
         cx.moveTo(x + b.w, y + 6);
-        cx.quadraticCurveTo(x + b.w + 150, GROUND_Y - camY - 90, x + b.w + 175, GROUND_Y - camY - 4);
-        cx.lineTo(x + b.w, GROUND_Y - camY);
+        cx.quadraticCurveTo(x + b.w + 150, gyS - 90, x + b.w + 175, gyS - 4);
+        cx.lineTo(x + b.w, gyS);
         cx.closePath(); cx.fill();
         cx.fillStyle = '#7a1e1e';
         cx.beginPath();
-        cx.moveTo(x + b.w, GROUND_Y - camY - 12);
-        cx.lineTo(x + b.w + 168, GROUND_Y - camY - 12);
-        cx.lineTo(x + b.w + 175, GROUND_Y - camY - 4);
-        cx.lineTo(x + b.w, GROUND_Y - camY - 3);
+        cx.moveTo(x + b.w, gyS - 12);
+        cx.lineTo(x + b.w + 168, gyS - 12);
+        cx.lineTo(x + b.w + 175, gyS - 4);
+        cx.lineTo(x + b.w, gyS - 3);
+        cx.closePath(); cx.fill();
+      }
+      if (b.stern) {
+        // the back end tapers and rounds off too, instead of ending in a flat wall
+        cx.fillStyle = '#323a46';
+        cx.beginPath();
+        cx.moveTo(x, y + 10);
+        cx.quadraticCurveTo(x - 70, gyS - 70, x - 85, gyS - 4);
+        cx.lineTo(x, gyS);
+        cx.closePath(); cx.fill();
+        cx.fillStyle = '#7a1e1e';
+        cx.beginPath();
+        cx.moveTo(x, gyS - 12);
+        cx.lineTo(x - 80, gyS - 12);
+        cx.lineTo(x - 85, gyS - 4);
+        cx.lineTo(x, gyS - 3);
         cx.closePath(); cx.fill();
       }
     }
@@ -2434,22 +2490,24 @@ function drawCity() {
       cx.fillRect(sx-4, gy-13, 8, 13);
       cx.beginPath(); cx.arc(sx, gy-13, 5, Math.PI, 0); cx.fill();
     }
-    // gantry crane silhouette
-    const crX = 33350 - camX;
-    if (crX > -400 && crX < VW+400) {
-      cx.strokeStyle = '#0d0b12'; cx.lineWidth = 10;
+    // gantry cranes — bright industrial yellow so they read clearly against the dark dock/sky
+    for (const crBase of [WATER_X - 650, CITY_W + 420]) {
+      const crX = crBase - camX;
+      if (crX < -400 || crX > VW+400) continue;
+      cx.strokeStyle = '#d9a83c'; cx.lineWidth = 10;
       cx.beginPath(); cx.moveTo(crX, gy); cx.lineTo(crX, gy-420); cx.stroke();
       cx.lineWidth = 7;
       cx.beginPath(); cx.moveTo(crX-150, gy-390); cx.lineTo(crX+330, gy-390); cx.stroke();
-      cx.lineWidth = 3;
+      cx.lineWidth = 3; cx.strokeStyle = '#8a6a20';
       cx.beginPath();
       cx.moveTo(crX, gy-420); cx.lineTo(crX+320, gy-392);
       cx.moveTo(crX, gy-420); cx.lineTo(crX-140, gy-392);
       cx.moveTo(crX+230, gy-388); cx.lineTo(crX+230, gy-160);
       cx.stroke();
-      cx.fillStyle = '#0d0b12';
+      cx.fillStyle = '#1a1610';
       cx.fillRect(crX-24, gy-372, 48, 34);                       // operator cab
-      cx.fillRect(crX+218, gy-162, 24, 18);                      // hook block
+      cx.fillStyle = 'rgba(180,200,215,0.55)'; cx.fillRect(crX-19, gy-368, 38, 14);   // cab window
+      cx.fillStyle = '#1a1610'; cx.fillRect(crX+218, gy-162, 24, 18);                 // hook block
       cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2.4)))+')';
       cx.beginPath(); cx.arc(crX, gy-424, 3.5, 0, 7); cx.fill(); // beacon
     }
@@ -2513,7 +2571,7 @@ function drawCity() {
     const railR = Math.min(VW, CITY_W - camX);
     if (railR > 0) {
       cx.fillStyle = '#0d0b12';
-      for (let px = -((camX+130) % 300); px < railR; px += 300) {   // support pylons
+      for (let px = -((camX+130) % 600); px < railR; px += 600) {   // support pylons
         cx.fillRect(px-5, ry, 10, gy - ry);
         cx.fillRect(px-16, ry+8, 32, 7);
       }
@@ -2696,19 +2754,32 @@ function drawSailShip() {
   const gy = GROUND_Y - camY;
   // silhouette matching the docked ship's proportions: stern hull, tower, bow hull + taper
   const hullH = 276, towerH = 598;
+  cx.fillStyle = '#262c36';
+  cx.beginPath();   // hull belly bulge below the waterline
+  cx.moveTo(sx - 85, gy - 12);
+  cx.quadraticCurveTo(sx + 800, gy + 22, sx + 1603, gy - 12);
+  cx.lineTo(sx + 1603, gy - 12); cx.lineTo(sx - 85, gy - 12);
+  cx.closePath(); cx.fill();
   cx.fillStyle = '#2a313c';
   cx.fillRect(sx, gy - hullH, 612, hullH);
   cx.fillRect(sx + 612, gy - towerH, 238, towerH);
   cx.fillRect(sx + 850, gy - hullH, 578, hullH);
-  cx.beginPath();
+  cx.beginPath();   // bow taper
   cx.moveTo(sx + 1428, gy - hullH + 6);
   cx.quadraticCurveTo(sx + 1578, gy - 90, sx + 1603, gy - 4);
   cx.lineTo(sx + 1428, gy);
   cx.closePath(); cx.fill();
+  cx.beginPath();   // stern taper
+  cx.moveTo(sx, gy - hullH + 10);
+  cx.quadraticCurveTo(sx - 70, gy - 70, sx - 85, gy - 4);
+  cx.lineTo(sx, gy);
+  cx.closePath(); cx.fill();
   cx.fillStyle = '#7a1e1e';
   cx.fillRect(sx, gy - 12, 1596, 9);
-  cx.fillStyle = 'rgba(255,190,90,0.5)';   // a few lit portholes
-  for (let i=0;i<12;i++) cx.fillRect(sx + 60 + i*120, gy - hullH + 90, 10, 12);
+  cx.strokeStyle = 'rgba(200,200,210,0.35)'; cx.lineWidth = 2;
+  cx.beginPath(); cx.moveTo(sx, gy - hullH + 2); cx.lineTo(sx + 1428, gy - hullH + 2); cx.stroke();
+  cx.fillStyle = 'rgba(255,190,90,0.5)';   // lit portholes, round to match the docked ship
+  for (let i=0;i<12;i++) { cx.beginPath(); cx.arc(sx + 65 + i*120, gy - hullH + 96, 6, 0, 7); cx.fill(); }
   cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2)))+')';
   cx.beginPath(); cx.arc(sx + 731, gy - towerH - 8, 3.5, 0, 7); cx.fill();
   // bow wake
@@ -2719,8 +2790,8 @@ function drawTrain(t) {
   for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
     const cxw = trainCarX(t, i) - camX, cy = RAIL_Y - camY;
-    if (cxw < -80 || cxw > VW+80) continue;
-    cx.save(); cx.translate(cxw, cy); cx.scale(t.dir, 1);
+    if (cxw < -80*TRAIN_SCALE || cxw > VW+80*TRAIN_SCALE) continue;
+    cx.save(); cx.translate(cxw, cy); cx.scale(t.dir*TRAIN_SCALE, TRAIN_SCALE);
     cx.fillStyle = i === 0 ? '#5d2d33' : '#3d4a5d';                 // engine leads, coaches follow
     cx.fillRect(-52, -30, 104, 26);
     cx.fillStyle = 'rgba(255,205,110,0.8)';                          // lit windows + passengers
@@ -2737,8 +2808,8 @@ function drawTrain(t) {
 }
 function drawTrainWreck(w) {
   const x = w.x - camX, y = w.y - camY;
-  if (x < -90 || x > VW+90) return;
-  cx.save(); cx.translate(x, y); cx.rotate(w.rot);
+  if (x < -90*TRAIN_SCALE || x > VW+90*TRAIN_SCALE) return;
+  cx.save(); cx.translate(x, y); cx.rotate(w.rot); cx.scale(TRAIN_SCALE, TRAIN_SCALE);
   cx.fillStyle = '#3d4a5d'; cx.fillRect(-52, -14, 104, 26);
   cx.fillStyle = 'rgba(255,150,60,0.7)';
   for (let wx=-42; wx<44; wx+=17) cx.fillRect(wx, -9, 11, 10);       // burning windows
@@ -2765,9 +2836,6 @@ function drawTank(tk) {
   if (tk.muzzle > 0) { cx.fillStyle = '#ffd970'; cx.beginPath(); cx.arc(48, 0, 8, 0, 7); cx.fill(); }
   cx.restore();
   cx.restore();
-  const w = 54, hpFrac = clamp(tk.hp/tk.maxHp, 0, 1);
-  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-52, w, 5);
-  cx.fillStyle = '#7fae5d'; cx.fillRect(x-w/2, y-52, w*hpFrac, 5);
 }
 function drawShark(s) {
   const x = s.x - camX, y = s.y - camY;
