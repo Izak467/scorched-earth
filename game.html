@@ -206,7 +206,13 @@ window.addEventListener('keydown', e => {
   const dir = DIRKEYS[e.code];
   if (dir) {
     const now = performance.now();
-    if (lastTap[dir] && now - lastTap[dir] < 270) startDash(dir);
+    const rapid = lastTap[dir] && now - lastTap[dir] < 270;
+    if (dir === 'up' && rapid && P.dashT > 0 && P.dashDir.x === 0 && P.dashDir.y < 0) {
+      // a fast 3rd tap of Up while the regular up-punch is still playing — upgrade it into the
+      // big launch that clears even the tallest building, instead of firing a second dash
+      P.dashT = 0.92; P.bigLaunch = true;
+      shake(10); sfxDash();
+    } else if (rapid) startDash(dir);
     lastTap[dir] = now;
   }
   if (e.code === 'Space') thunderclap();
@@ -266,7 +272,7 @@ const P = {
   x: 800, y: 900, vx: 0, vy: 0, facing: 1,
   dashT: 0, dashCd: 0, dashDir: {x:1,y:0},
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
-  grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, dashSpeed: 1650,
+  grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
 };
 // world-space street lamp positions (matches the visual spacing in drawCity) — used as light-ball spawn points
 const streetLamps = [];
@@ -307,12 +313,11 @@ function startDash(dir) {
   P.dashDir = {x:dx/m, y:dy/m};
   // double-tapping straight down is always a full continuous slam to the ground, no matter the
   // altitude — give it a generous duration cap instead of the normal short dash window, and let the
-  // ground-proximity check below end it the instant it actually gets there. Straight up is just a
-  // regular timed lunge, but held a bit longer than normal so it reliably clears even the tallest
-  // building in one shot.
+  // ground-proximity check below end it the instant it actually gets there. Straight up is just the
+  // regular dash-punch, held a hair longer than normal for a bit of extra height.
   P.vertDash = (dir === 'down') ? dir : null;
-  P.dashT = P.vertDash ? 3 : (dir === 'up' ? 0.92 : 0.30);
-  P.dashSpeed = (dir === 'up') ? 1150 : 1650;   // up-punch travels slower, just held longer to still clear the tallest building
+  P.dashT = P.vertDash ? 3 : (dir === 'up' ? 0.38 : 0.30);
+  P.bigLaunch = false;   // a fast 3rd tap of Up (see keydown handler) upgrades this into the big launch
   P.dashCd = 0.55;
   P.grounded = false; P.hopping = false;   // any dash-punch launches him back into flight
   shake(6); sfxDash();
@@ -351,7 +356,7 @@ function thunderclap() {
   for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,P.x,P.y) < R*R) {
     s.hp -= 70; const d=Math.hypot(s.x-P.x,s.y-P.y)||1;
     s.vx += (s.x-P.x)/d*900; s.vy += (s.y-P.y)/d*900;
-    if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true); addKill(); if (s.boss) starlightTimer = rand(140, 190); }
+    if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
   }
   for (const h of helis) if (!h.dead && dist2(h.x,h.y,P.x,P.y) < R*R) { h.hp -= 130; h.vx += (h.x-P.x)>0?300:-300; if (h.hp<=0) heliDeath(h); }
   for (const a of atrains) if (!a.dead && dist2(a.x,a.y-16,P.x,P.y) < R*R) {
@@ -376,6 +381,17 @@ let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, 
 let boltLockout = 0;   // Starlight can't fire another electric bolt until this clears — prevents chain-stunning
 
 function shake(m) { shakeMag = Math.min(24, shakeMag + m); }
+// boss kills are easy to lose in the chaos of a normal fight — make them unmistakable with a
+// banner, a hard flash/shake, and a much bigger sound than a regular kill
+let bossBanner = null;
+function announceBossKill(name, x, y) {
+  bossBanner = { text: name + ' TAKEN DOWN', life: 2.6, maxLife: 2.6 };
+  bossFlashT = 0.35;
+  shake(30);
+  sfxBoom(); thump(30, 1.1, 0.55);
+  for (let i=0;i<10;i++) rings.push({x, y, r: rand(4,16), life: rand(0.6,1.1), w: rand(3,6)});
+}
+let bossFlashT = 0;
 function panicNear(x, r) {
   for (const c of civs) if (Math.abs(c.x-x) < r) { c.panic = 8; c.dir = c.x < x ? -1 : 1; }
   for (const car of cars) if (Math.abs(car.x-x) < r) car.panic = 6;
@@ -432,7 +448,8 @@ function spawnStarlight() {
 function spawnHeli() {
   const side = Math.random()<0.5 ? -1 : 1;
   helis.push({ x: clamp(P.x + side*(VW*0.65+300), 150, WORLD_W-150), y: rand(350, 900),
-    vx: 0, vy: 0, hp: 300, fireCd: rand(1.2,2.5), t: rand(0,9), dead: false, falling: false, rot: 0, smokeCd: 0 });
+    vx: 0, vy: 0, hp: 300, fireCd: rand(1.2,2.5), t: rand(0,9), dead: false, falling: false, rot: 0, smokeCd: 0,
+    holdDist: rand(340, 640), altOffset: rand(-220, 220) });   // per-heli hover spot, so they don't all converge to the same row
 }
 // commercial jets: high-altitude background traffic — pure scenery/hazard, no AI, just fly straight through.
 // laser or plowing into them (dash, or just flying into one) blows them up; falling passengers use the faller system.
@@ -469,6 +486,7 @@ function atrainDeath(a) {
   addKill(); addDamage(2.4e6);
   gibBurst(a.x, a.y-16, 1.6, true);
   atrainTimer = rand(100, 140);   // cooldown starts at death, not spawn — significant downtime before he's back
+  announceBossKill('A-TRAIN', a.x, a.y-16);
 }
 // Queen Maeve: ground/rooftop boss like A-Train (wall-runs, rooftop-hops), but her signature move
 // is a high jump that reaches UP at an airborne player — if the grab connects she hauls you down
@@ -486,6 +504,7 @@ function maeveDeath(a) {
   addKill(); addDamage(2.4e6);
   gibBurst(a.x, a.y-16, 1.6, true);
   maeveTimer = rand(150, 200);   // cooldown starts at death, not spawn — significant downtime before she's back
+  announceBossKill('QUEEN MAEVE', a.x, a.y-16);
 }
 
 // ─── Destruction ───
@@ -619,7 +638,7 @@ function explode(x, y, r, cellFrac, hostile, scale) {
     for (const g of grunts) if (!g.dead && dist2(g.x,g.y-16,x,y) < r*r) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
     for (const c of civs) if (!c.dead && dist2(c.x,c.y-14,x,y) < r*r) { c.dead=true; gibBurst(c.x,c.y-14,1.1); addKill(); }
     for (const car of cars) if (!car.dead && dist2(car.x,car.y-10,x,y) < r*r) carBoom(car);
-    for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,x,y) < r*r) { s.hp -= 55; if (s.hp<=0) { gibBurst(s.x,s.y,1.5,true); addKill(); if (s.boss) starlightTimer = rand(140, 190); } }
+    for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,x,y) < r*r) { s.hp -= 55; if (s.hp<=0) { gibBurst(s.x,s.y,1.5,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } } }
   }
   if (dist2(P.x,P.y,x,y) < (r+30)*(r+30)) {
     const d = Math.hypot(P.x-x,P.y-y)||1;
@@ -668,7 +687,11 @@ function gibBurst(x, y, power, big, bvx, bvy) {
     const a = rand(0, Math.PI*2), sp = rand(60, 420)*power;
     bloods.push({ x, y, vx: Math.cos(a)*sp + bvx*0.7, vy: Math.sin(a)*sp - rand(0,150) + bvy*0.7, life: rand(0.5,1.6) });
   }
-  bakeSplat(x, Math.min(surfaceBelow(x, y), y+30), rand(8,16), '#5e0c0c', 0.55);
+  // instant splat right at the kill point only makes sense near a surface — for an airborne kill
+  // (jetpack grunt, flying supe) the real surface is far below, and the falling blood particles
+  // above already land and bake there naturally, so don't also bake one floating at the death point
+  const groundS = surfaceBelow(x, y);
+  if (groundS - y < 60) bakeSplat(x, groundS, rand(8,16), '#5e0c0c', 0.55);
   shake(big ? 8 : 3);
   if (big) sfxBoom(); else sfxSplat();
   panicNear(x, 480);
@@ -684,6 +707,8 @@ function update(dt) {
   P.hurtFlash = Math.max(0, P.hurtFlash - dt*3);
   if (streakT > 0) { streakT -= dt; if (streakT <= 0) streak = 0; }
   document.getElementById('streak').textContent = streak >= 2 ? ('⚔ STREAK x' + streak) : '';
+  if (bossBanner) { bossBanner.life -= dt; if (bossBanner.life <= 0) bossBanner = null; }
+  bossFlashT = Math.max(0, bossFlashT - dt*2.2);
 
   const mWX = mouseSX + camX, mWY = mouseSY + camY;
 
@@ -701,7 +726,8 @@ function update(dt) {
   if (P.dashT > 0) {
     P.dashT -= dt;
     if (P.dashT <= 0) P.dashCoastT = 0.5;   // dash just ended — coast out gradually instead of snapping to a stop
-    P.vx = P.dashDir.x * P.dashSpeed; P.vy = P.dashDir.y * P.dashSpeed;
+    const dspd = P.bigLaunch ? 1150 : 1650;   // triple-tap-up launch travels slower but for much longer, clearing the tallest building
+    P.vx = P.dashDir.x * dspd; P.vy = P.dashDir.y * dspd;
     afterimages.push({x:P.x, y:P.y, f:P.facing, a:0.5});
     for (const g of grunts) if (!g.dead && dist2(P.x,P.y,g.x,g.y-16) < 62*62) { g.dead=true; gibBurst(g.x,g.y-16,1.3,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
     for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
@@ -710,7 +736,7 @@ function update(dt) {
       s.hp = s.boss ? s.hp - 380 : 0;
       s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
-      if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) starlightTimer = rand(140, 190); }
+      if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     }
     for (const h of helis) if (!h.dead && dist2(P.x,P.y,h.x,h.y) < 105*105) heliDeath(h);
     for (const a of atrains) if (!a.dead && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
@@ -883,7 +909,7 @@ function update(dt) {
       s.hp -= DPS*dt; s.smokeT = 0.1; s.flash = 0.1;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-5,5), y:beamEndY+rand(-6,6), vx:rand(-140,140), vy:rand(-180,20), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffbb44':'#ff5533' });
       if (Math.random()<0.35) smokes.push({ x:s.x+rand(-8,8), y:s.y+rand(-10,6), r:rand(4,8), vr:rand(12,22), vy:rand(-50,-20), life:rand(0.35,0.7), c:'rgba(70,62,74,' });
-      if (s.hp <= 0) { gibBurst(s.x, s.y, 1.5, true); addKill(); if (s.boss) starlightTimer = rand(140, 190); }
+      if (s.hp <= 0) { gibBurst(s.x, s.y, 1.5, true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     } else if (hitHeli) {
       const h = hitHeli;
       h.hp -= 450*dt; h.hurt = 0.1;
@@ -1101,9 +1127,9 @@ function update(dt) {
       if (h.y >= s - 20) { h.gone = true; explode(h.x, s-10, 95, 0.8); flashScorch(h.x, s, 60); }
       continue;
     }
-    const want = P.x + (h.x > P.x ? 480 : -480);
+    const want = P.x + (h.x > P.x ? h.holdDist : -h.holdDist);
     h.vx += clamp(want - h.x, -300, 300)*dt*1.6;
-    h.vy += clamp((P.y - 140) - h.y, -200, 200)*dt*1.4 + Math.sin(h.t*2.2)*24*dt;
+    h.vy += clamp((P.y - 140 + h.altOffset) - h.y, -200, 200)*dt*1.4 + Math.sin(h.t*2.2)*24*dt;
     h.vx -= h.vx*1.6*dt; h.vy -= h.vy*1.8*dt;
     h.x = clamp(h.x + h.vx*dt, 80, WORLD_W-80);
     h.y = clamp(h.y + h.vy*dt, 160, GROUND_Y-260);
@@ -1202,19 +1228,19 @@ function update(dt) {
       }
       a.roofCd -= dt;
       if (a.roofCd <= 0) {
-        a.roofCd = rand(1.2, 2.4);
+        a.roofCd = rand(0.7, 1.6);   // checks in more often, so he's climbing/wall-running far more of the time
         // bias ground/rooftop choice toward whichever surface is closer to the player's height —
-        // he's trying to get to your altitude, not just coin-flipping
+        // he's trying to get to your altitude, not just coin-flipping — but generally favors rooftops
         if (a.mode === 'ground') {
           const idx = findBuildingIndexAt(a.x);
           if (idx >= 0) {
             const roofDist = Math.abs(P.y - fgBuildings[idx].roofY), groundDist = Math.abs(P.y - GROUND_Y);
-            if (Math.random() < (roofDist < groundDist ? 0.85 : 0.3)) { a.mode = 'roof'; a.buildingIdx = idx; }
+            if (Math.random() < (roofDist < groundDist ? 0.95 : 0.55)) { a.mode = 'roof'; a.buildingIdx = idx; }
           }
         } else {
           const b = fgBuildings[a.buildingIdx];
           const roofDist = b ? Math.abs(P.y - b.roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
-          if (Math.random() < (groundDist < roofDist ? 0.6 : 0.2)) { a.mode = 'ground'; a.buildingIdx = -1; }
+          if (Math.random() < (groundDist < roofDist ? 0.4 : 0.1)) { a.mode = 'ground'; a.buildingIdx = -1; }
         }
       }
     }
@@ -1255,11 +1281,11 @@ function update(dt) {
       a.stateT -= dt;
       const tdx = P.x-a.x, tdy = P.y-a.y, tdd = Math.hypot(tdx,tdy) || 1;
       const desVx = (tdx/tdd)*1400, desVy = (tdy/tdd)*1400;
-      const turn = Math.min(1, dt*1.1);   // gentle correction only — reads as a controlled pounce, not homing
+      const turn = Math.min(1, dt*2.0);   // strong enough correction to reliably connect, still reads as a pounce not a homing missile
       a.jumpVx += (desVx - a.jumpVx)*turn; a.jumpVy += (desVy - a.jumpVy)*turn;
       a.x += a.jumpVx*dt; a.y += a.jumpVy*dt;
       a.facing = a.jumpVx >= 0 ? 1 : -1;
-      if (dist2(a.x,a.y,P.x,P.y) < 65*65) {
+      if (dist2(a.x,a.y,P.x,P.y) < 80*80) {
         // connects — sends Homelander flying back harder than a regular supe hit, no stun
         const kd = Math.hypot(P.x-a.x, P.y-a.y) || 1;
         P.grounded = false; P.hopping = false;   // un-ground him so the knockback actually sends him flying
@@ -1282,8 +1308,8 @@ function update(dt) {
         const leadT = 0.35;
         const tx = P.x + P.vx*leadT, ty = P.y + P.vy*leadT;
         const dx = tx-a.x, dy = ty-a.y, dd = Math.hypot(dx,dy) || 1;
-        a.jumpVx = (dx/dd)*1400; a.jumpVy = (dy/dd)*1400;
-        a.state = 'jump'; a.stateT = 0.6;   // enough flight time for her longer reach without overshooting wildly
+        a.jumpVx = (dx/dd)*1400; a.jumpVy = (dy/dd)*1400 - 260;   // launches a bit higher than the direct line — reads as an actual leap, then the in-flight correction pulls her back down onto target
+        a.state = 'jump'; a.stateT = 0.7;   // a touch longer to give the arc time to come back down onto target
       }
     } else if (a.state === 'skid') {
       a.stateT -= dt;
@@ -1603,12 +1629,30 @@ function drawATrain(a) {
   // always-on glow so he doesn't get lost against dark buildings/street at ground level
   cx.fillStyle = 'rgba(60,150,255,0.35)';
   cx.beginPath(); cx.arc(x, y-16, 28, 0, 7); cx.fill();
+  if (a.state === 'run' || charging) {
+    // electric blur trail: a couple of ghost copies of his torso, offset back along his motion —
+    // reads as "moving too fast to see cleanly" rather than just a couple of speed lines
+    cx.globalAlpha = 0.28;
+    for (let i=1;i<=2;i++) {
+      cx.save(); cx.translate(x - a.facing*i*15, y); cx.scale(a.facing, 1);
+      cx.fillStyle = '#2f8fff';
+      cx.fillRect(-6,-30,12,17);
+      cx.restore();
+    }
+    cx.globalAlpha = 1;
+  }
   cx.save(); cx.translate(x, y); cx.scale(a.facing, 1);
   if (a.state === 'run' || charging) {
-    cx.strokeStyle = 'rgba(90,190,255,'+(charging?0.7:0.4)+')'; cx.lineWidth = 2.5;
-    for (let i=0;i<5;i++) {
-      const off = rand(-4,4);
-      cx.beginPath(); cx.moveTo(-8-i*8, -14+off); cx.lineTo(-8-i*8-(charging?42:16), -14+off); cx.stroke();
+    // jagged electric crackle instead of plain straight speed lines
+    cx.strokeStyle = 'rgba(120,210,255,'+(charging?0.85:0.55)+')'; cx.lineWidth = 2; cx.lineCap = 'round';
+    const trailLen = charging ? 46 : 20;
+    for (let i=0;i<4;i++) {
+      const bx = -8-i*10, by = -20+i*3;
+      cx.beginPath(); cx.moveTo(bx, by);
+      cx.lineTo(bx - trailLen*0.4, by + rand(-6,6));
+      cx.lineTo(bx - trailLen*0.7, by + rand(-6,6));
+      cx.lineTo(bx - trailLen, by + rand(-4,4));
+      cx.stroke();
     }
   }
   if (winding) {
@@ -1637,10 +1681,15 @@ function drawMaeve(a) {
     cx.beginPath(); cx.arc(0,-20,26,0,7); cx.fill();
   }
   if (jumping) {
+    // trailing streaks follow her actual velocity direction (not a fixed horizontal line), so the
+    // arc of the leap actually reads instead of always looking like a flat dash
+    const jsp = Math.hypot(a.jumpVx, a.jumpVy) || 1;
+    const bdx = -(a.jumpVx*a.facing)/jsp, bdy = -a.jumpVy/jsp;
     cx.strokeStyle = 'rgba(255,90,70,0.6)'; cx.lineWidth = 2.5;
     for (let i=0;i<4;i++) {
       const off = rand(-5,5);
-      cx.beginPath(); cx.moveTo(-10-i*9, -18+off); cx.lineTo(-10-i*9-30, -18+off); cx.stroke();
+      const bx = -10 + bdx*i*9, by = -18 + bdy*i*9 + off;
+      cx.beginPath(); cx.moveTo(bx, by); cx.lineTo(bx + bdx*30, by + bdy*30); cx.stroke();
     }
   }
   const legBend = jumping ? 6 : 0;
@@ -2077,6 +2126,19 @@ function draw() {
   v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,0.42)');
   cx.fillStyle = v; cx.fillRect(0,0,VW,VH);
   if (P.hurtFlash > 0) { cx.fillStyle = 'rgba(180,20,10,'+(P.hurtFlash*0.12)+')'; cx.fillRect(0,0,VW,VH); }
+  if (bossFlashT > 0) { cx.fillStyle = 'rgba(255,225,120,'+(bossFlashT*0.5)+')'; cx.fillRect(0,0,VW,VH); }
+  if (bossBanner) {
+    const p = bossBanner.life / bossBanner.maxLife;
+    const fade = p > 0.75 ? (1-p)/0.25 : p < 0.25 ? p/0.25 : 1;
+    cx.textAlign = 'center';
+    cx.fillStyle = 'rgba(0,0,0,'+(fade*0.5)+')'; cx.fillRect(0, VH*0.28, VW, 68);
+    cx.fillStyle = 'rgba(255,225,120,'+fade+')';
+    cx.font = 'bold 40px Georgia';
+    cx.shadowColor = 'rgba(255,150,40,0.8)'; cx.shadowBlur = 18;
+    cx.fillText(bossBanner.text, VW/2, VH*0.28+46);
+    cx.shadowBlur = 0;
+    cx.textAlign = 'left';
+  }
   if (paused) {
     cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(0,0,VW,VH);
     cx.fillStyle = '#f2ede2'; cx.font = 'bold 42px Georgia'; cx.textAlign = 'center';
