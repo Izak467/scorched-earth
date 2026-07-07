@@ -48,8 +48,13 @@ function resize() { VW = cv.width = window.innerWidth; VH = cv.height = window.i
 window.addEventListener('resize', resize); resize();
 
 // ─── World constants ───
-const WORLD_W = 30000;
+// zone layout, left to right: city streets 0..CITY_W, working dock CITY_W..WATER_X,
+// then open water out to the world edge. GROUND_Y doubles as the water surface level.
+const WORLD_W = 40000;
+const CITY_W = 32000;
+const WATER_X = 34000;
 const GROUND_Y = 1660;
+const WATER_FLOOR = GROUND_Y + 520;   // the sea here is shallow — you can dip under, not dive
 const CW = 17, CH = 23;              // structural cell (windows sit on 2x2 blocks)
 const rand = (a,b) => a + Math.random()*(b-a);
 const randi = (a,b) => Math.floor(rand(a,b+1));
@@ -62,30 +67,51 @@ function segDist(px,py,ax,ay,bx,by) {
 }
 
 // ─── Permanent gore: baked decal canvas ───
+// only covers land (city + dock) — nothing bakes onto water; blood out there is the
+// transient drifting-cloud system instead, which is also what keeps the 40K world affordable
 const DS = 0.5;
 const decalCv = document.createElement('canvas');
-decalCv.width = Math.ceil(WORLD_W*DS); decalCv.height = Math.ceil((GROUND_Y+140)*DS);
+decalCv.width = Math.ceil(WATER_X*DS); decalCv.height = Math.ceil((GROUND_Y+140)*DS);
 const dcx = decalCv.getContext('2d');
 function bakeSplat(x, y, r, color, alpha) {
+  if (x > WATER_X - 4) return;
   dcx.globalAlpha = alpha;
   dcx.fillStyle = color;
   dcx.beginPath(); dcx.ellipse(x*DS, (y+1)*DS, r*DS, r*0.34*DS, 0, 0, 7); dcx.fill();
   dcx.globalAlpha = 1;
 }
 function bakeScorch(x, y, r) {
+  if (x > WATER_X - 4) return;
   dcx.globalAlpha = 0.5; dcx.fillStyle = '#0c0a0a';
   dcx.beginPath(); dcx.arc(x*DS, y*DS, r*DS, 0, 7); dcx.fill();
   dcx.globalAlpha = 1;
 }
+// ─── Water FX: splashes, drifting blood clouds, rising bubbles ───
+let waterBloods = [], bubbles = [];
+function splash(x, mag) {
+  const n = Math.round(clamp(6 + mag*0.02, 6, 18));
+  for (let i=0;i<n;i++) sparks.push({ x: x+rand(-14,14), y: GROUND_Y+2,
+    vx: rand(-90,90), vy: -rand(80, 140 + mag*0.5), life: rand(0.25,0.55),
+    c: Math.random()<0.5 ? '#bfe2f2' : '#e8f6fc' });
+  rings.push({ x, y: GROUND_Y, r: 6, life: 0.4, w: 3 });
+  if (mag > 300) thump(70, 0.25, 0.2);
+}
+function waterBlood(x, y, r) {
+  waterBloods.push({ x, y: Math.max(y, GROUND_Y+8), r, vr: rand(3,7),
+    vx: rand(-9,9), vy: rand(3,10), life: rand(8,14), maxLife: 12 });
+}
+function bubbleAt(x, y) {
+  bubbles.push({ x, y, vy: -rand(35,85), vx: rand(-10,10), r: rand(1.2,3), life: rand(0.6,1.6) });
+}
 // transient scorch: for heli/rocket/car blasts — fades out instead of staying baked forever
 let scorchFx = [];
-function flashScorch(x, y, r) { scorchFx.push({x, y, r, life: 1.3, maxLife: 1.3}); }
+function flashScorch(x, y, r) { if (x > WATER_X) return; scorchFx.push({x, y, r, life: 1.3, maxLife: 1.3}); }
 
 // ─── City generation ───
 const fgBuildings = [];
 (function genCity(){
   let x = -100;
-  while (x < WORLD_W + 100) {
+  while (x < CITY_W - 500) {
     const cols = 2*randi(5, 11), rows = 2*randi(7, 20);
     const w = cols*CW, h = rows*CH;
     const cells = new Float32Array(cols*rows);
@@ -99,9 +125,63 @@ const fgBuildings = [];
     x += w + rand(180, 460);
   }
 })();
+// ─── The docked ship: three adjacent "buildings" (stern hull, bridge tower, bow hull) pushed
+// after the city so fgBuildings stays sorted — all the laser/cell/collapse physics come free.
+const SHIP_X = 34400;
+const shipPieces = [];
+function makeShipPiece(x, cols, rows, opts) {
+  const w = cols*CW, h = rows*CH;
+  const wins = [];
+  for (let c=0;c<cols/2;c++) for (let r=0;r<rows/2;r++)
+    if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
+  const b = {x, w, h, cols, rows, roofY: GROUND_Y-h, shade: 0, wins, cells: new Float32Array(cols*rows),
+    destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+    ant: !!(opts&&opts.ant), ac: -1, burning: false, ship: true, bow: !!(opts&&opts.bow)};
+  fgBuildings.push(b); shipPieces.push(b);
+  return b;
+}
+(function genShip(){
+  let sx = SHIP_X;
+  const stern = makeShipPiece(sx, 36, 12); sx += stern.w;
+  const tower = makeShipPiece(sx, 14, 26, {ant:true}); sx += tower.w;
+  makeShipPiece(sx, 34, 12, {bow:true});
+})();
+function resetShip() {
+  for (const b of shipPieces) {
+    b.cells.fill(0); b.destroyed = 0; b.collapsed = false; b.collapsing = false;
+    b.dirty = false; b.supT = 0; b.burning = false;
+    b.wins = [];
+    for (let c=0;c<b.cols/2;c++) for (let r=0;r<b.rows/2;r++)
+      if (Math.random()<0.6) b.wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
+  }
+}
+// ─── Dock containers: destructible stacked props — cuttable, dashable, topple and crush ───
+const containers = [];
+(function genDock(){
+  let x = CITY_W + 140;
+  while (x < WATER_X - 300) {
+    if (Math.random() < 0.55) {
+      const stack = randi(1, 3);
+      for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
+        c: ['#8a3a2a','#2f6b8a','#3d7a46','#8a7a2f','#5d5d66'][randi(0,4)], dead: false, vy: 0 });
+      x += 158;
+    } else x += rand(100, 240);
+  }
+})();
+function containerBoom(ct) {
+  if (ct.dead) return;
+  ct.dead = true;
+  addDamage(35000);
+  for (let i=0;i<10;i++) debris.push({ x: ct.x+rand(0,ct.w), y: ct.y+rand(0,ct.h),
+    vx: rand(-200,200), vy: rand(-260,-40), rot: rand(0,7), vr: rand(-7,7),
+    r: rand(3,7), c: ct.c, life: rand(1.2,2.4) });
+  for (let i=0;i<8;i++) sparks.push({ x: ct.x+ct.w/2, y: ct.y+ct.h/2, vx: rand(-160,160), vy: rand(-180,-20),
+    life: rand(0.15,0.35), c: ['#ffdd66','#ff8833'][randi(0,1)] });
+  sfxCrack(); shake(4);
+}
 function makeLayer(minH, maxH, minW, maxW) {
   const arr = []; let x = -300;
-  while (x < WORLD_W + 600) {
+  while (x < CITY_W + 200) {
     const w = rand(minW,maxW), h = rand(minH,maxH);
     arr.push({x,w,h}); x += w + rand(10,80);
   }
@@ -273,10 +353,12 @@ const P = {
   dashT: 0, dashCd: 0, dashDir: {x:1,y:0},
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
   grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
+  underwaterT: 0, wasUnder: false, carried: false,
 };
+const inWater = (x, y) => x > WATER_X && y > GROUND_Y;
 // world-space street lamp positions (matches the visual spacing in drawCity) — used as light-ball spawn points
 const streetLamps = [];
-for (let lx = 35; lx < WORLD_W; lx += 160) streetLamps.push(lx);
+for (let lx = 35; lx < CITY_W; lx += 160) streetLamps.push(lx);
 function pickLightSource(nearX) {
   if (Math.random() < 0.5) {
     const cands = streetLamps.filter(lx => Math.abs(lx-nearX) < 700);
@@ -367,6 +449,10 @@ function thunderclap() {
     a.hp -= 90;
     if (a.hp<=0) maeveDeath(a);
   }
+  for (const dp of deeps) if (!dp.dead && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
+    dp.hp -= 90;
+    if (dp.hp<=0) deepDeath(dp);
+  }
   // detonate incoming rockets mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0.8, true); }
   damageCellsInRadius(P.x, P.y, 140, 0.7);
@@ -377,8 +463,10 @@ function thunderclap() {
 let grunts = [], civs = [], supes = [], helis = [], cars = [], bullets = [], rockets = [], fallers = [];
 let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = [], debris = [], embers = [];
 let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
-let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(45,60), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(45,70);
+let deeps = [], fishes = [], tentacles = [];
+let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(45,60), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(45,70), deepTimer = rand(50,80);
 let boltLockout = 0;   // Starlight can't fire another electric bolt until this clears — prevents chain-stunning
+let shipRespawnT = 0, sailShip = null;   // the docked-ship respawn cycle: sink → 20s → new one sails in from the right
 
 function shake(m) { shakeMag = Math.min(24, shakeMag + m); }
 // boss kills are easy to lose in the chaos of a normal fight — make them unmistakable with a
@@ -401,27 +489,38 @@ function spawnGrunt(air) {
   const side = Math.random()<0.5 ? -1 : 1;
   const x = clamp(P.x + side * rand(VW*0.45, VW*0.5+700), 60, WORLD_W-60);
   let y = GROUND_Y;
+  // a ground spawn out over the water becomes a patrol-boat gunner instead
+  const boatG = !air && x > WATER_X + 60;
   if (air) y = GROUND_Y - rand(260, 780);
+  else if (boatG) y = GROUND_Y - 2;
   else if (Math.random() < 0.55) {
     const cands = fgBuildings.filter(b => !b.collapsed && x > b.x-40 && x < b.x+b.w+40);
     if (cands.length) { const b = cands[randi(0,cands.length-1)]; y = b.roofY; }
   }
-  grunts.push({ x: clamp(x,40,WORLD_W-40), y, vx: rand(-40,40), vy: 0, fireCd: rand(0.7,2.3),
-    stepT: rand(0,9), surfY: y, dead: false, muzzle: 0, air: !!air, anchor: y, bobT: rand(0,9) });
+  grunts.push({ x: clamp(x,40,WORLD_W-40), y, vx: boatG ? rand(-35,35) : rand(-40,40), vy: 0, fireCd: rand(0.7,2.3),
+    stepT: rand(0,9), surfY: y, dead: false, muzzle: 0, air: !!air, boatG, anchor: y, bobT: rand(0,9) });
 }
 function spawnCiv() {
   const side = Math.random()<0.5 ? -1 : 1;
   const x = clamp(P.x + side * rand(150, VW*0.55+600), 40, WORLD_W-40);
+  const swim = x > WATER_X + 40;   // out in the water they're swimmers
   const skins = ['#e2b892','#c99b6f','#a97b52','#8a5f3d'];
   const tops = ['#7a8fae','#ae7a7a','#7aae8b','#aea77a','#9b7aae','#c9c2b4','#5d6c80'];
-  civs.push({ x, y: GROUND_Y, dir: Math.random()<0.5?-1:1, sp: rand(28,55),
+  civs.push({ x, y: swim ? GROUND_Y + 10 : GROUND_Y, dir: Math.random()<0.5?-1:1, sp: swim ? rand(14,30) : rand(28,55),
     skin: skins[randi(0,3)], top: tops[randi(0,6)], pant: ['#39404d','#4d3939','#2e2e38'][randi(0,2)],
-    stepT: rand(0,9), panic: 0, dead: false, w: Math.random()<0.5 });
+    stepT: rand(0,9), panic: 0, dead: false, w: Math.random()<0.5, swim });
 }
 function spawnCar() {
   const side = Math.random()<0.5 ? -1 : 1;
   const x = clamp(P.x + side * rand(VW*0.4, VW*0.6+500), 60, WORLD_W-60);
   const dir = Math.random()<0.5 ? -1 : 1;
+  if (x > WATER_X + 80) {
+    // water-zone traffic is boats
+    const bcolors = ['#e8e2d4','#8a2f2f','#2f5b8a','#3d5c46','#7a7a82'];
+    cars.push({ x, dir, kind: 'boat', scale: 1, sp: rand(50,105),
+      c: bcolors[randi(0,4)], y: GROUND_Y + 2, police: false, panic: 0, dead: false, t: rand(0,9) });
+    return;
+  }
   const colors = ['#8a2f2f','#2f5b8a','#8a7a2f','#3d3d46','#5d8a2f','#7a7a82','#46323c'];
   const police = Math.random() < 0.15;
   const roll = Math.random();
@@ -512,6 +611,25 @@ function maeveDeath(a) {
   gibBurst(a.x, a.y-16, 1.6, true);
   maeveTimer = rand(150, 200);   // cooldown starts at death, not spawn — significant downtime before she's back
   announceBossKill('QUEEN MAEVE', a.x, a.y-16);
+}
+// The Deep: water boss. Lurks under the surface with only a fin showing, breach-lunges at you
+// over the water, grabs you if you linger underwater 3s+, and mixes in a surface dolphin charge,
+// leaping-fish volleys, and tentacle grabs that punish hovering low over the waves.
+function spawnDeep() {
+  deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
+    hp: 1200, maxHp: 1200, state: 'lurk', stateT: rand(1,2), facing: -1, dead: false,
+    atkCd: rand(1.6,2.6), tentCd: 5, jumpVx: 0, jumpVy: 0, chargeDir: 1 });
+}
+function deepDeath(dp) {
+  if (dp.dead) return;
+  dp.dead = true;
+  if (P.carried) { P.carried = false; }   // don't leave Homelander glued to a corpse mid-grab
+  addKill(); addDamage(2.4e6);
+  gibBurst(dp.x, dp.y-10, 1.6, true);
+  waterBlood(dp.x, Math.max(dp.y, GROUND_Y+30), 26);
+  splash(dp.x, 900);
+  deepTimer = rand(150, 200);
+  announceBossKill('THE DEEP', dp.x, dp.y-10);
 }
 
 // ─── Destruction ───
@@ -611,19 +729,27 @@ function collapseBuilding(b) {
   // than drifting sideways and settling on a neighboring rooftop (looked like it was floating)
   for (let k=0;k<40;k++) bloods.push({ x: rand(b.x, b.x+b.w), y: rand(b.roofY, GROUND_Y-80),
     vx: rand(-15,15), vy: rand(-20,40), life: rand(2, 3.5) });
-  dcx.clearRect(b.x*DS, 0, b.w*DS, (GROUND_Y-58)*DS);
-  // permanent rubble pile baked at the base — like blood, this never fades — instead of a flat
-  // scorch disc that just read as a grey blob sitting over the building's footprint
-  dcx.fillStyle = '#141018';
-  for (let k=0;k<22;k++) {
-    const cxw = (b.x + rand(-14, b.w+14)) * DS, cyw = (GROUND_Y - rand(0, 26)) * DS;
-    const rw = rand(10,30)*DS, rh = rand(6,16)*DS;
-    dcx.save(); dcx.translate(cxw, cyw); dcx.rotate(rand(0,7));
-    dcx.fillRect(-rw/2, -rh/2, rw, rh);
-    dcx.restore();
+  if (b.ship) {
+    // a ship piece sinks — huge splash and churn instead of a rubble pile
+    splash(b.x + b.w/2, 1200);
+    splash(b.x + rand(0, b.w), 700);
+    for (let k=0;k<20;k++) bubbleAt(b.x + rand(0, b.w), GROUND_Y + rand(10, 120));
+    waterBlood(b.x + b.w/2, GROUND_Y + 60, 30);
+  } else {
+    dcx.clearRect(b.x*DS, 0, b.w*DS, (GROUND_Y-58)*DS);
+    // permanent rubble pile baked at the base — like blood, this never fades — instead of a flat
+    // scorch disc that just read as a grey blob sitting over the building's footprint
+    dcx.fillStyle = '#141018';
+    for (let k=0;k<22;k++) {
+      const cxw = (b.x + rand(-14, b.w+14)) * DS, cyw = (GROUND_Y - rand(0, 26)) * DS;
+      const rw = rand(10,30)*DS, rh = rand(6,16)*DS;
+      dcx.save(); dcx.translate(cxw, cyw); dcx.rotate(rand(0,7));
+      dcx.fillRect(-rw/2, -rh/2, rw, rh);
+      dcx.restore();
+    }
+    dcx.fillStyle = 'rgba(10,8,12,0.35)';
+    dcx.beginPath(); dcx.ellipse((b.x+b.w/2)*DS, GROUND_Y*DS, b.w*0.5*DS, 8*DS, 0, 0, 7); dcx.fill();
   }
-  dcx.fillStyle = 'rgba(10,8,12,0.35)';
-  dcx.beginPath(); dcx.ellipse((b.x+b.w/2)*DS, GROUND_Y*DS, b.w*0.5*DS, 8*DS, 0, 0, 7); dcx.fill();
   shake(20); sfxBoom(); thump(38, 0.8, 0.5);
   panicNear(b.x + b.w/2, 1400);
 }
@@ -654,6 +780,7 @@ function explode(x, y, r, cellFrac, hostile, scale) {
   }
   damageCellsInRadius(x, y, r*0.85, cellFrac === undefined ? 1 : cellFrac);
   flashScorch(x, Math.min(y, GROUND_Y), r*0.5);
+  if (x > WATER_X && y > GROUND_Y - r) { splash(x, r*6); for (let i=0;i<8;i++) bubbleAt(x+rand(-r,r)*0.6, Math.max(y, GROUND_Y+10)+rand(-20,20)); }
   shake(8); sfxBoom();
   panicNear(x, 800);
 }
@@ -668,6 +795,7 @@ function carBoom(car) {
   for (let i=0;i<6;i++) sparks.push({ x: car.x, y: car.y-8, vx: rand(-120,120), vy: rand(-160,-20),
     life: rand(0.15,0.35), c: ['#ffdd66','#ff8833'][randi(0,1)] });
   flashScorch(car.x, GROUND_Y, big ? 34 : 24);
+  if (car.kind === 'boat') { splash(car.x, 500); waterBlood(car.x, GROUND_Y+16, 12); }
   shake(big ? 6 : 4); sfxBoom();
 }
 function heliDeath(h) {
@@ -697,8 +825,13 @@ function gibBurst(x, y, power, big, bvx, bvy) {
   // instant splat right at the kill point only makes sense near a surface — for an airborne kill
   // (jetpack grunt, flying supe) the real surface is far below, and the falling blood particles
   // above already land and bake there naturally, so don't also bake one floating at the death point
-  const groundS = surfaceBelow(x, y);
-  if (groundS - y < 60) bakeSplat(x, groundS, rand(8,16), '#5e0c0c', 0.55);
+  if (inWater(x, y)) {
+    waterBlood(x, y, rand(10,18));   // a kill in the water blooms a big lingering cloud right away
+    splash(x, 200);
+  } else {
+    const groundS = surfaceBelow(x, y);
+    if (groundS - y < 60) bakeSplat(x, groundS, rand(8,16), '#5e0c0c', 0.55);
+  }
   shake(big ? 8 : 3);
   if (big) sfxBoom(); else sfxSplat();
   panicNear(x, 480);
@@ -756,8 +889,22 @@ function update(dt) {
       rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
       if (a.hp<=0) maeveDeath(a);
     }
+    for (const dp of deeps) if (!dp.dead && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
+      dp.hp -= 260;
+      rings.push({x:dp.x,y:dp.y-10,r:10,life:0.4,w:3});
+      if (dp.hp<=0) deepDeath(dp);
+    }
+    for (const ct of containers) if (!ct.dead && dist2(P.x,P.y,ct.x+ct.w/2,ct.y+ct.h/2) < 82*82) containerBoom(ct);
     damageCellsInRadius(P.x + P.dashDir.x*24, P.y + P.dashDir.y*24, 46, 1);
-    if (P.dashDir.y > 0.5 && P.y >= GROUND_Y - 60) {
+    // slamming over open water: punch through the surface with a splash, bottom out at the sea floor
+    if (P.dashDir.y > 0.5 && P.x > WATER_X) {
+      if (P.y <= GROUND_Y && P.y + 1650*dt > GROUND_Y) splash(P.x, 900);
+      if (P.y >= WATER_FLOOR - 70) {
+        P.dashT = 0; P.vertDash = null; P.y = WATER_FLOOR - 50; P.vy = 0;
+        for (let i=0;i<12;i++) bubbleAt(P.x + rand(-40,40), P.y + rand(-10,10));
+        thump(40, 0.4, 0.3); shake(8);
+      }
+    } else if (P.dashDir.y > 0.5 && P.y >= GROUND_Y - 60) {
       P.dashT = 0; P.vertDash = null; P.y = GROUND_Y - 40; P.vy = 0; P.grounded = true; P.hopping = false;
       rings.push({x:P.x, y:GROUND_Y-8, r:12, life:0.55, w:6});
       bakeScorch(P.x, GROUND_Y, 60);
@@ -791,26 +938,39 @@ function update(dt) {
   } else {
     if (P.dashCoastT > 0) P.dashCoastT -= dt;
     if (P.knockT > 0) P.knockT -= dt;
-    const ACC = 2600 + 1900*P.boost;
-    const DRAG = P.dashCoastT > 0 ? 1.7 : 5.0, MAX = 480 + 620*Math.pow(P.boost, 1.35);
+    const swim = inWater(P.x, P.y);
+    const ACC = (2600 + 1900*P.boost) * (swim ? 0.45 : 1);
+    const DRAG = swim ? 6.5 : (P.dashCoastT > 0 ? 1.7 : 5.0);
+    const MAX = (480 + 620*Math.pow(P.boost, 1.35)) * (swim ? 0.55 : 1);
     let nx = ix, ny = iy;
     if (nx&&ny) { nx*=0.7071; ny*=0.7071; }
     P.vx += nx*ACC*dt; P.vy += ny*ACC*dt;
     P.vx -= P.vx*DRAG*dt; P.vy -= P.vy*DRAG*dt;
+    if (swim) {
+      P.vy -= 230*dt;   // buoyancy — he drifts back toward the surface unless he swims down
+      if (Math.random() < dt*14) bubbleAt(P.x + rand(-10,10), P.y - rand(0,20));
+    }
     const sp = Math.hypot(P.vx,P.vy);
     // a big knockback (Maeve's lunge) is exempt from the normal max-speed clamp while it plays out —
     // otherwise it gets capped back down to ordinary flight speed within a single frame and the extra
     // power is never actually felt
     if (P.knockT <= 0 && sp > MAX) { P.vx *= MAX/sp; P.vy *= MAX/sp; }
     if (!moving && sp < 40) P.vy += Math.sin(gameT*2.2)*14*dt*20;
-    if (sp > 620) afterimages.push({x:P.x, y:P.y, f:P.facing, a:0.22});
+    if (sp > 620 && !swim) afterimages.push({x:P.x, y:P.y, f:P.facing, a:0.22});
   }
   P.x = clamp(P.x + P.vx*dt, 30, WORLD_W-30);
+  if (P.grounded && P.x > WATER_X) { P.grounded = false; P.hopping = false; }   // ran off the dock edge
   if (!P.grounded) {
-    P.y = clamp(P.y + P.vy*dt, 60, GROUND_Y-26);
+    const wasAbove = P.y <= GROUND_Y;
+    const maxY = P.x > WATER_X ? WATER_FLOOR - 30 : GROUND_Y - 26;
+    P.y = clamp(P.y + P.vy*dt, 60, maxY);
+    // splash crossing the water surface in either direction
+    if (P.x > WATER_X && wasAbove !== (P.y <= GROUND_Y) && Math.abs(P.vy) > 120) splash(P.x, Math.abs(P.vy));
     // touched down at street level under his own power (not mid-dash) — land and start running
-    if (P.dashT <= 0 && P.vy >= 0 && P.y >= GROUND_Y - 26 - 0.5) { P.grounded = true; P.hopping = false; P.vy = 0; }
+    if (P.x <= WATER_X && P.dashT <= 0 && P.vy >= 0 && P.y >= GROUND_Y - 26 - 0.5) { P.grounded = true; P.hopping = false; P.vy = 0; }
   }
+  // The Deep watches for anyone lingering below the surface
+  if (inWater(P.x, P.y) && P.y > GROUND_Y + 30) P.underwaterT += dt; else P.underwaterT = 0;
 
   if (P.dashT <= 0) {
     const hitB = cellIntactAt(P.x, P.y);
@@ -841,7 +1001,8 @@ function update(dt) {
   P.bank += ((P.dashT>0 ? P.dashDir.x*0.5 : P.vx*0.0006) - P.bank) * Math.min(1, dt*8);
 
   camX += (clamp(P.x + P.vx*0.22 - VW/2, 0, WORLD_W - VW) - camX) * Math.min(1, dt*5);
-  camY += (clamp(P.y + P.vy*0.15 - VH/2, -100, GROUND_Y + 120 - VH) - camY) * Math.min(1, dt*5);
+  const camBot = Math.max(-100, (P.x > WATER_X - 300 ? WATER_FLOOR + 140 : GROUND_Y + 120) - VH);
+  camY += (clamp(P.y + P.vy*0.15 - VH/2, -100, camBot) - camY) * Math.min(1, dt*5);
   shakeMag = Math.max(0, shakeMag - dt*30);
 
   // ── structural checks / collapse animation ──
@@ -865,7 +1026,11 @@ function update(dt) {
     f.vy += 1400*dt;
     f.x += f.vx*dt; f.y += f.vy*dt; f.life -= dt;
     const s = surfaceBelow(f.x, f.y - 10);
-    if (f.y >= s || f.life <= 0) { gibBurst(f.x, s, 1.1, false, f.vx*0.3, 0); addKill(); f.dead = true; }
+    if (f.y >= s || f.life <= 0) {
+      // splashing down in the water gibs just under the surface so the blood clouds out there
+      gibBurst(f.x, f.x > WATER_X ? GROUND_Y + 30 : s, 1.1, false, f.vx*0.3, 0);
+      addKill(); f.dead = true;
+    }
   }
   fallers = fallers.filter(f => !f.dead);
 
@@ -882,7 +1047,11 @@ function update(dt) {
     let stopD = tlen, hitB = null, hitI = -1;
     if (uy > 0.001) {                     // ground is solid — beam can't pass through it
       const groundD = (GROUND_Y - ey) / uy;
-      if (groundD > 0 && groundD < stopD) stopD = groundD;
+      // ...but only on land. Over the water the surface just sizzles and the beam keeps going,
+      // stopping at the sea floor instead.
+      if (groundD > 0 && groundD < stopD && ex + ux*groundD < WATER_X) stopD = groundD;
+      const floorD = (WATER_FLOOR - ey) / uy;
+      if (floorD > 0 && floorD < stopD && ex + ux*floorD >= WATER_X) stopD = floorD;
     }
     for (let d = 30; d < stopD; d += 9) {
       const px = ex + ux*d, py = ey + uy*d;
@@ -943,6 +1112,8 @@ function update(dt) {
     for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
       f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
     }
+    for (const ct of containers) if (!ct.dead && segDist(ct.x+ct.w/2, ct.y+ct.h/2, ex, ey, beamEndX, beamEndY) < 56) containerBoom(ct);
+    for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
     for (const a of atrains) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
       a.hp -= 380*dt;
       a.laserHitT += dt; a.hitFlag = true;
@@ -955,8 +1126,26 @@ function update(dt) {
       if (Math.random()<0.5) sparks.push({x:a.x,y:a.y-20,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
       if (a.hp <= 0) maeveDeath(a);
     }
+    for (const dp of deeps) if (!dp.dead && segDist(dp.x, dp.y-12, ex, ey, beamEndX, beamEndY) < 24) {
+      dp.hp -= 380*dt;
+      if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
+      else if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+      if (dp.hp <= 0) deepDeath(dp);
+    }
     if (Math.random() < 0.8) sparks.push({ x: beamEndX+rand(-4,4), y: beamEndY+rand(-4,4),
       vx: rand(-160,160), vy: rand(-200,40), life: rand(0.1,0.35), c: Math.random()<0.5?'#ffdd66':'#ff5533' });
+    // beam crossing the water surface boils it — steam burst at the crossing, bubbles below
+    if (Math.abs(uy) > 0.001) {
+      const surfD = (GROUND_Y - ey) / uy;
+      if (surfD > 0 && surfD < stopD) {
+        const sxw = ex + ux*surfD;
+        if (sxw > WATER_X) {
+          if (Math.random() < 0.5) smokes.push({ x: sxw+rand(-6,6), y: GROUND_Y-4, r: rand(5,10),
+            vr: rand(16,30), vy: rand(-60,-30), life: rand(0.4,0.8), c: 'rgba(220,230,235,' });
+          if (Math.random() < 0.6) bubbleAt(ex + ux*rand(surfD, stopD), ey + uy*rand(surfD, stopD));
+        }
+      }
+    }
   }
   P.beamEndX = beamEndX; P.beamEndY = beamEndY;
 
@@ -982,6 +1171,9 @@ function update(dt) {
   if (atrainTimer <= 0 && kills > 40 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
   maeveTimer -= dt;
   if (maeveTimer <= 0 && kills > 80 && maeves.length === 0) { spawnMaeve(); maeveTimer = rand(65, 95); }
+  deepTimer -= dt;
+  // The Deep only stirs when you're actually out over (or near) his water
+  if (deepTimer <= 0 && kills > 100 && deeps.length === 0 && P.x > WATER_X - VW*0.6) { spawnDeep(); deepTimer = rand(60, 90); }
 
   // ── grunts (ground + jetpack) ──
   for (const g of grunts) {
@@ -995,8 +1187,17 @@ function update(dt) {
       g.x += g.vx*dt;
       g.y = clamp(g.anchor + Math.sin(g.bobT*1.7)*26, 200, GROUND_Y-120);
       if (Math.random() < dt*0.2) g.anchor = clamp(g.anchor + rand(-90,90), GROUND_Y-800, GROUND_Y-240);
+    } else if (g.boatG) {
+      // patrol-boat gunner: drifts on the swell, stays in open water
+      g.bobT += dt;
+      g.x += g.vx * dt;
+      g.y = GROUND_Y - 2 + Math.sin(g.bobT*2.1)*3;
+      if (g.x < WATER_X + 50) { g.x = WATER_X + 50; g.vx = Math.abs(g.vx); }
+      if (g.x > WORLD_W - 40) g.vx = -Math.abs(g.vx);
+      if (Math.random() < dt*0.3) g.vx = rand(-40,40);
     } else {
       g.x += g.vx * dt;
+      if (g.x > WATER_X - 30) { g.x = WATER_X - 30; g.vx = -Math.abs(g.vx); }   // dock ends here
       const s = surfaceBelow(g.x, g.y - 30);
       if (s !== g.surfY || g.x < 30 || g.x > WORLD_W-30) { g.vx = -g.vx; g.x += g.vx*dt*2; }
       if (Math.random() < dt*0.4) g.vx = rand(-50,50);
@@ -1016,21 +1217,42 @@ function update(dt) {
   for (const c of civs) {
     if (c.dead) continue;
     c.stepT += dt;
+    if (c.swim) {
+      // swimmer: slow paddle, bobbing on the surface; panicked swimmers thrash away fast
+      const spd = c.panic > 0 ? 75 : c.sp;
+      if (c.panic > 0) {
+        c.panic -= dt; c.x += c.dir * spd * dt;
+        if (Math.random() < dt*6) sparks.push({ x: c.x+rand(-8,8), y: GROUND_Y+2, vx: rand(-40,40), vy: -rand(40,90), life: rand(0.2,0.4), c: '#cfe9f5' });
+      } else {
+        c.x += c.dir * spd * dt;
+        if (Math.random() < dt*0.2) c.dir = -c.dir;
+      }
+      c.y = GROUND_Y + 10 + Math.sin(c.stepT*2.4)*3;
+      if (c.x < WATER_X + 25) { c.x = WATER_X + 25; c.dir = 1; }
+      if (c.x > WORLD_W - 30) c.dir = -1;
+      continue;
+    }
     if (c.panic > 0) { c.panic -= dt; c.x += c.dir * 170 * dt; }
     else {
       c.x += c.dir * c.sp * dt;
       if (Math.random() < dt*0.15) c.dir = -c.dir;
     }
+    if (c.x > WATER_X - 20) { c.x = WATER_X - 20; c.dir = -1; }   // walkers stop at the dock edge
     if (c.x < 30 || c.x > WORLD_W-30) c.dir = -c.dir;
   }
   civs = civs.filter(c => !c.dead && Math.abs(c.x - P.x) < VW*2.2);
 
-  // ── cars ──
+  // ── cars (and boats — water-zone traffic) ──
   for (const car of cars) {
     if (car.dead) continue;
     car.t += dt;
     if (car.panic > 0) car.panic -= dt;
     car.x += car.dir * car.sp * (car.panic>0 ? 2.4 : 1) * dt;
+    if (car.kind === 'boat') {
+      car.y = GROUND_Y + 2 + Math.sin(car.t*1.8)*3;
+      if (car.x < WATER_X + 70) { car.x = WATER_X + 70; car.dir = 1; }
+      if (Math.random() < dt*3) sparks.push({ x: car.x - car.dir*26, y: GROUND_Y+2, vx: -car.dir*rand(10,40), vy: -rand(15,45), life: rand(0.15,0.35), c: '#cfe9f5' });
+    } else if (car.x > WATER_X - 60) { car.x = WATER_X - 60; car.dir = -1; }
     if (car.x < 50 || car.x > WORLD_W-50) car.dir = -car.dir;
   }
   cars = cars.filter(c => !c.dead && Math.abs(c.x - P.x) < VW*2.2);
@@ -1184,6 +1406,29 @@ function update(dt) {
   }
   jets = jets.filter(j => !j.dead && Math.abs(j.x-P.x) < VW*3);
 
+  // ── dock containers: gravity-settle onto the stack (or dock) below, crush on landing ──
+  for (const ct of containers) {
+    if (ct.dead) continue;
+    let restY = GROUND_Y - ct.h;
+    for (const o of containers) {
+      if (o === ct || o.dead) continue;
+      if (Math.abs(o.x - ct.x) < ct.w*0.7 && o.y > ct.y) restY = Math.min(restY, o.y - ct.h);
+    }
+    if (ct.y < restY - 0.5) {
+      ct.vy += 1500*dt;
+      ct.y += ct.vy*dt;
+      if (ct.y >= restY) {
+        ct.y = restY;
+        if (ct.vy > 240) {
+          thump(80, 0.2, 0.2); shake(4);
+          for (const c of civs) if (!c.dead && !c.swim && c.x > ct.x-8 && c.x < ct.x+ct.w+8 && Math.abs(c.y - (ct.y+ct.h)) < 30) { c.dead=true; gibBurst(c.x,c.y-14,1.2); addKill(); }
+          for (const g of grunts) if (!g.dead && !g.air && !g.boatG && g.x > ct.x-8 && g.x < ct.x+ct.w+8 && Math.abs(g.y - (ct.y+ct.h)) < 30) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
+        }
+        ct.vy = 0;
+      }
+    }
+  }
+
   // ── A-Train (ground/rooftop speedster boss) ──
   for (const a of atrains) {
     if (a.dead) continue;
@@ -1281,6 +1526,10 @@ function update(dt) {
     const targetY = (a.mode === 'roof' && fgBuildings[a.buildingIdx]) ? fgBuildings[a.buildingIdx].roofY - 4 : GROUND_Y - 4;
     a.y += clamp(targetY - a.y, -2600*dt, 2600*dt);   // fast wall-run transition, not a teleport
     a.x = clamp(a.x, 40, WORLD_W-40);
+    // speedsters run on water — spray a wake behind him when he's sprinting the surface
+    if (a.x > WATER_X && a.y > GROUND_Y - 30 && Math.random() < dt*24)
+      sparks.push({ x: a.x - a.facing*rand(4,22), y: GROUND_Y+1, vx: -a.facing*rand(30,100),
+        vy: -rand(40,120), life: rand(0.2,0.4), c: '#cfe9f5' });
   }
   atrains = atrains.filter(a => !a.dead);
 
@@ -1310,7 +1559,7 @@ function update(dt) {
       } else if (a.stateT <= 0) {
         a.state = 'skid'; a.stateT = rand(0.4,0.7);
       }
-      a.x = clamp(a.x, 40, WORLD_W-40);
+      a.x = clamp(a.x, 40, WATER_X - 50);   // she can't run on water — the dock edge is her limit
       a.y = clamp(a.y, 80, GROUND_Y-20);
       continue;   // under her own lunge velocity — skip the surface-tracking pull below
     }
@@ -1373,9 +1622,180 @@ function update(dt) {
     }
     const targetY = (a.mode === 'roof' && fgBuildings[a.buildingIdx]) ? fgBuildings[a.buildingIdx].roofY - 4 : GROUND_Y - 4;
     a.y += clamp(targetY - a.y, -2600*dt, 2600*dt);
-    a.x = clamp(a.x, 40, WORLD_W-40);
+    a.x = clamp(a.x, 40, WATER_X - 50);   // she can't run on water — the dock edge is her limit
   }
   maeves = maeves.filter(a => !a.dead);
+
+  // ── The Deep (water boss) ──
+  for (const dp of deeps) {
+    if (dp.dead) continue;
+    dp.atkCd -= dt; dp.tentCd -= dt;
+
+    if (dp.state === 'lurk') {
+      // cruise just under the surface toward the player — only the fin shows
+      const step = Math.min(Math.abs(P.x - dp.x), 430*dt);
+      dp.x += (P.x >= dp.x ? 1 : -1) * step;
+      dp.y += ((GROUND_Y + 55) - dp.y) * Math.min(1, dt*4);
+      dp.facing = P.x >= dp.x ? 1 : -1;
+      if (P.underwaterT > 3 && inWater(P.x, P.y)) {
+        dp.state = 'grabdash'; dp.stateT = 1.5;   // you stayed down too long — he's coming
+      } else if (dp.atkCd <= 0 && P.x > WATER_X - 200 && P.y < GROUND_Y - 20 && Math.abs(P.x - dp.x) < 760) {
+        const r = Math.random();
+        if (r < 0.45) { dp.state = 'crouch'; dp.stateT = 0.35; }
+        else if (r < 0.72) { dp.state = 'volley'; dp.stateT = 0.3; }
+        else { dp.state = 'dolphin'; dp.stateT = 0.35; dp.chargeDir = P.x >= dp.x ? 1 : -1; }
+        dp.atkCd = rand(2.2, 3.4);
+      }
+      // tentacle from below punishes hovering lazily just over the waves
+      if (dp.tentCd <= 0 && P.x > WATER_X + 80 && P.y > GROUND_Y - 170 && P.y < GROUND_Y - 4) {
+        tentacles.push({ x: clamp(P.x + P.vx*0.25, WATER_X+60, WORLD_W-60), phase: 'warn', t: 0.45, h: 0, grabbed: false });
+        dp.tentCd = rand(5, 8);
+      }
+    } else if (dp.state === 'crouch') {
+      dp.stateT -= dt;
+      if (Math.random() < dt*30) bubbleAt(dp.x + rand(-20,20), GROUND_Y + rand(6,30));
+      if (dp.stateT <= 0) {
+        // breach lunge — same led-target pounce as Maeve's, launched out of the water
+        const leadT = 0.35;
+        const tx = P.x + P.vx*leadT, ty = P.y + P.vy*leadT;
+        const dx = tx-dp.x, dy = ty-dp.y, dd = Math.hypot(dx,dy) || 1;
+        dp.jumpVx = (dx/dd)*1400; dp.jumpVy = (dy/dd)*1400 - 220;
+        dp.state = 'jump'; dp.stateT = 0.7;
+        splash(dp.x, 800);
+      }
+    } else if (dp.state === 'jump') {
+      dp.stateT -= dt;
+      const tdx = P.x-dp.x, tdy = P.y-dp.y, tdd = Math.hypot(tdx,tdy) || 1;
+      const turn = Math.min(1, dt*2.0);
+      dp.jumpVx += ((tdx/tdd)*1400 - dp.jumpVx)*turn; dp.jumpVy += ((tdy/tdd)*1400 - dp.jumpVy)*turn;
+      dp.x += dp.jumpVx*dt; dp.y += dp.jumpVy*dt;
+      dp.facing = dp.jumpVx >= 0 ? 1 : -1;
+      if (dist2(dp.x,dp.y,P.x,P.y) < 75*75) {
+        // connects — slightly less force than Maeve's hit, no stun
+        const kd = Math.hypot(P.x-dp.x, P.y-dp.y) || 1;
+        P.grounded = false; P.hopping = false; P.knockT = 0.5;
+        P.vx += (P.x-dp.x)/kd * 3200; P.vy += (P.y-dp.y)/kd * 3200;
+        P.hurtFlash = 1; shake(18); sfxHit(); thump(65,0.3,0.3);
+        dp.state = 'fall';
+      } else if (dp.stateT <= 0) dp.state = 'fall';
+    } else if (dp.state === 'fall') {
+      dp.jumpVy += 1500*dt;
+      dp.x += dp.jumpVx*0.4*dt; dp.y += dp.jumpVy*dt;
+      if (dp.y >= GROUND_Y + 30) { splash(dp.x, 600); dp.state = 'lurk'; dp.jumpVx = 0; dp.jumpVy = 0; }
+    } else if (dp.state === 'grabdash') {
+      dp.stateT -= dt;
+      const dx = P.x-dp.x, dy = P.y-dp.y, dd = Math.hypot(dx,dy) || 1;
+      dp.x += (dx/dd)*1700*dt; dp.y += (dy/dd)*1700*dt;
+      dp.facing = dx >= 0 ? 1 : -1;
+      if (Math.random() < dt*20) bubbleAt(dp.x, dp.y);
+      if (!inWater(P.x, P.y) || dp.stateT <= 0) dp.state = 'lurk';
+      else if (dd < 55) { dp.state = 'carry'; P.carried = true; }
+    } else if (dp.state === 'carry') {
+      // hauls Homelander out of the water diagonally up-left, then hurls him
+      dp.x -= 1050*dt; dp.y -= 1400*dt;
+      P.x = dp.x + 14; P.y = dp.y - 6; P.vx = -1050; P.vy = -1400;
+      P.stunT = Math.max(P.stunT, 0.2); P.dashT = 0; P.grounded = false;
+      dp.facing = -1;
+      if (dp.y < GROUND_Y && dp.y > GROUND_Y - 60) splash(dp.x, 700);
+      if (dp.y <= GROUND_Y - 430) {
+        P.carried = false; P.knockT = 0.6; P.stunT = 0.35;
+        P.vx = -2400; P.vy = -450;
+        P.hurtFlash = 1; shake(20); sfxHit(); thump(60,0.35,0.35);
+        dp.state = 'fall'; dp.jumpVx = 300; dp.jumpVy = 200;
+      }
+    } else if (dp.state === 'volley') {
+      dp.stateT -= dt;
+      if (dp.stateT <= 0) {
+        // a school of fish leaps out of the water in an arcing spread at you
+        for (let k=0;k<5;k++) {
+          const fx = clamp(dp.x + rand(-90,90), WATER_X+40, WORLD_W-40);
+          const a = Math.atan2(P.y - GROUND_Y, P.x - fx);
+          const sp = rand(680, 900);
+          fishes.push({ x: fx, y: GROUND_Y+4, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - rand(120,260), life: 3, t: rand(0,9) });
+          splash(fx, 150);
+        }
+        dp.state = 'lurk';
+      }
+    } else if (dp.state === 'dolphin') {
+      dp.stateT -= dt;
+      if (dp.stateT > 0) {
+        dp.y += ((GROUND_Y - 4) - dp.y)*Math.min(1, dt*8);   // surfacing windup
+      } else {
+        dp.x += dp.chargeDir*1900*dt;
+        dp.y = GROUND_Y - 10 + Math.sin(gameT*14)*4;
+        dp.facing = dp.chargeDir;
+        if (Math.random() < dt*30) sparks.push({ x: dp.x - dp.chargeDir*rand(10,30), y: GROUND_Y+2,
+          vx: -dp.chargeDir*rand(30,110), vy: -rand(40,130), life: rand(0.2,0.45), c: '#cfe9f5' });
+        if (dist2(dp.x, dp.y, P.x, P.y) < 62*62) {
+          P.grounded = false; P.knockT = 0.45;
+          P.vx += dp.chargeDir*2400; P.vy -= 350;
+          P.hurtFlash = 1; shake(16); sfxHit(); thump(70,0.25,0.3);
+          dp.state = 'lurk';
+        } else if (dp.x < WATER_X + 90 || dp.x > WORLD_W - 90 || Math.abs(dp.x - P.x) > 1400) {
+          dp.state = 'lurk';
+        }
+      }
+    }
+    dp.x = clamp(dp.x, WATER_X + 60, WORLD_W - 60);
+    dp.y = clamp(dp.y, 120, WATER_FLOOR - 40);
+  }
+  deeps = deeps.filter(d => !d.dead);
+
+  // ── The Deep's leaping fish ──
+  for (const f of fishes) {
+    f.t += dt; f.life -= dt;
+    f.vy += 900*dt;
+    f.x += f.vx*dt; f.y += f.vy*dt;
+    if (dist2(f.x,f.y,P.x,P.y) < 22*22) {
+      f.life = 0;
+      const kd = Math.hypot(P.x-f.x,P.y-f.y) || 1;
+      P.vx += (P.x-f.x)/kd*300; P.vy += (P.y-f.y)/kd*300;
+      P.hurtFlash = 1; sfxHit();
+    } else if (f.vy > 0 && f.y > GROUND_Y+4 && f.x > WATER_X) { splash(f.x, 80); f.life = 0; }
+    else if (cellIntactAt(f.x, f.y) || f.y > GROUND_Y+8) f.life = 0;
+  }
+  fishes = fishes.filter(f => f.life > 0);
+
+  // ── The Deep's tentacles (rise under a low-hovering player) ──
+  for (const t of tentacles) {
+    t.t -= dt;
+    const canGrab = (t.phase === 'up' || t.phase === 'hold');
+    if (t.phase === 'warn') {
+      if (Math.random() < dt*18) rings.push({x: t.x, y: GROUND_Y, r: 4, life: 0.35, w: 2});
+      if (t.t <= 0) { t.phase = 'up'; t.t = 0.2; splash(t.x, 300); }
+    } else if (t.phase === 'up') {
+      t.h = Math.min(215, t.h + 1500*dt);
+      if (t.t <= 0) { t.phase = 'hold'; t.t = 0.3; }
+    } else if (t.phase === 'hold') {
+      if (t.t <= 0) t.phase = 'down';
+    } else {
+      t.h -= 900*dt;
+      if (t.h <= 0) t.gone = true;
+    }
+    if (canGrab && !t.grabbed && Math.abs(P.x - t.x) < 44 && P.y > GROUND_Y - t.h - 20 && P.y < GROUND_Y) {
+      // snags him and yanks him down to the surface for a beat
+      t.grabbed = true;
+      P.x = t.x; P.y = GROUND_Y - 30; P.vx *= 0.2; P.vy = 0; P.dashT = 0;
+      P.stunT = Math.max(P.stunT, 0.45); P.hurtFlash = 1; shake(10); sfxHit();
+    }
+  }
+  tentacles = tentacles.filter(t => !t.gone);
+
+  // ── the docked ship: sink → wait → replacement sails in from the far right ──
+  if (shipRespawnT === 0 && !sailShip && shipPieces.every(p => p.collapsed)) shipRespawnT = 20;
+  if (shipRespawnT > 0) {
+    shipRespawnT -= dt;
+    if (shipRespawnT <= 0) { sailShip = { x: WORLD_W + 700 }; shipRespawnT = -1; }
+  }
+  if (sailShip) {
+    sailShip.x -= 290*dt;
+    if (Math.random() < dt*10) sparks.push({ x: sailShip.x - 20, y: GROUND_Y+2,
+      vx: rand(20,80), vy: -rand(20,70), life: rand(0.2,0.4), c: '#cfe9f5' });
+    if (sailShip.x <= SHIP_X) {
+      resetShip(); sailShip = null; shipRespawnT = 0;
+      thump(50, 1.4, 0.45);   // horn as she locks into the berth
+    }
+  }
 
   // ── rockets (fast, mildly homing, hostile) ──
   for (const r of rockets) {
@@ -1433,8 +1853,18 @@ function update(dt) {
 
   // ── gibs / debris (heavy chunks crush pedestrians) ──
   for (const g of gibs) {
+    if (inWater(g.x, g.y)) {
+      // underwater: heavy drag, slow sink, thin blood trail — no bouncing off the "surface"
+      g.vx -= g.vx*2.6*dt; g.vy += (140 - g.vy)*1.4*dt;
+      g.x += g.vx*dt; g.y += g.vy*dt; g.rot += g.vr*0.3*dt; g.life -= dt;
+      if (Math.random() < dt*2.5) waterBlood(g.x, g.y, rand(3,7));
+      if (g.y > WATER_FLOOR - 6) { g.y = WATER_FLOOR - 6; g.vy = 0; g.vx *= 0.8; }
+      continue;
+    }
     g.vy += 1500*dt;
     g.x += g.vx*dt; g.y += g.vy*dt; g.rot += g.vr*dt; g.life -= dt;
+    if (g.x > WATER_X && g.y > GROUND_Y - 4 && g.vy > 100) splash(g.x, g.vy*0.4);
+    if (g.x > WATER_X) continue;   // fell into the water zone — handled by the branch above next frame
     const s = surfaceBelow(g.x, g.y - 20);
     if (g.y > s - g.r) {
       g.y = s - g.r;
@@ -1445,8 +1875,16 @@ function update(dt) {
   gibs = gibs.filter(g => g.life > 0);
   if (gibs.length > 280) gibs.splice(0, gibs.length-280);
   for (const g of debris) {
+    if (inWater(g.x, g.y)) {
+      g.vx -= g.vx*2.6*dt; g.vy += (160 - g.vy)*1.4*dt;
+      g.x += g.vx*dt; g.y += g.vy*dt; g.rot += g.vr*0.3*dt; g.life -= dt;
+      if (g.y > WATER_FLOOR - 5) { g.y = WATER_FLOOR - 5; g.vy = 0; g.vx *= 0.8; }
+      continue;
+    }
     g.vy += 1400*dt;
     g.x += g.vx*dt; g.y += g.vy*dt; g.rot += g.vr*dt; g.life -= dt;
+    if (g.x > WATER_X && g.y > GROUND_Y - 4 && g.vy > 120 && Math.random() < 0.5) splash(g.x, g.vy*0.3);
+    if (g.x > WATER_X) continue;
     if (g.heavy && g.vy > 240) {
       for (const c of civs) if (!c.dead && dist2(g.x,g.y,c.x,c.y-14) < 18*18) { c.dead=true; gibBurst(c.x,c.y-14,1); addKill(); }
       for (const gr of grunts) if (!gr.dead && dist2(g.x,g.y,gr.x,gr.y-16) < 18*18) { gr.dead=true; gibBurst(gr.x,gr.y-16,1); addKill(); }
@@ -1461,11 +1899,30 @@ function update(dt) {
   for (const b of bloods) {
     b.vy += 1400*dt;
     b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
+    if (b.x > WATER_X) {
+      // hits the water: becomes a drifting cloud that lingers far longer than land blood
+      if (b.y > GROUND_Y) { waterBlood(b.x, b.y, rand(5,11)); b.life = 0; }
+      continue;
+    }
     const s = surfaceBelow(b.x, b.y - 12);
     if (b.y >= s) { bakeSplat(b.x, s, rand(2.5, 9), '#5e0c0c', rand(0.4,0.75)); b.life = 0; }
   }
   bloods = bloods.filter(b => b.life > 0);
   if (bloods.length > 500) bloods.splice(0, bloods.length-500);
+
+  // ── water blood clouds + bubbles ──
+  for (const w of waterBloods) {
+    w.x += w.vx*dt; w.y += w.vy*dt; w.r += w.vr*dt; w.life -= dt;
+    w.y = clamp(w.y, GROUND_Y+6, WATER_FLOOR-10);
+  }
+  waterBloods = waterBloods.filter(w => w.life > 0);
+  if (waterBloods.length > 130) waterBloods.splice(0, waterBloods.length-130);
+  for (const b of bubbles) {
+    b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
+    if (b.y <= GROUND_Y + 3) b.life = 0;   // reached the surface — pop
+  }
+  bubbles = bubbles.filter(b => b.life > 0);
+  if (bubbles.length > 120) bubbles.splice(0, bubbles.length-120);
 
   // ── fx ──
   for (const s of sparks) { s.x+=s.vx*dt; s.y+=s.vy*dt; s.vy+=800*dt; s.life-=dt; }
@@ -1535,6 +1992,7 @@ function drawCity() {
     const x = b.x - camX, y = b.roofY - camY;
     if (x + b.w < -60 || x > VW+60) continue;
     if (b.collapsed) {
+      if (b.ship) continue;   // a sunk ship piece leaves nothing behind — the water closes over it
       cx.fillStyle = '#171220';
       cx.beginPath(); cx.moveTo(x, GROUND_Y - camY);
       const humps = 4 + Math.floor(b.rubbleSeed*3);
@@ -1550,25 +2008,28 @@ function drawCity() {
     }
     if (b.collapsing) {
       const p = clamp(b.collapseT / b.collapseDur, 0, 1);
-      cx.fillStyle = '#171220';
-      cx.beginPath(); cx.moveTo(x, GROUND_Y - camY);
-      const humps = 4 + Math.floor(b.rubbleSeed*3);
-      for (let i=0;i<=humps;i++) {
-        const hx = x + b.w*i/humps;
-        const hh = (26 + 46*Math.abs(Math.sin(b.rubbleSeed*20 + i*2.4))) * p;
-        cx.lineTo(hx, GROUND_Y - camY - hh);
+      if (!b.ship) {
+        cx.fillStyle = '#171220';
+        cx.beginPath(); cx.moveTo(x, GROUND_Y - camY);
+        const humps = 4 + Math.floor(b.rubbleSeed*3);
+        for (let i=0;i<=humps;i++) {
+          const hx = x + b.w*i/humps;
+          const hh = (26 + 46*Math.abs(Math.sin(b.rubbleSeed*20 + i*2.4))) * p;
+          cx.lineTo(hx, GROUND_Y - camY - hh);
+        }
+        cx.lineTo(x+b.w, GROUND_Y - camY); cx.closePath(); cx.fill();
       }
-      cx.lineTo(x+b.w, GROUND_Y - camY); cx.closePath(); cx.fill();
       const remH = b.collapseFromH * (1-p);
       if (remH > 2) {
         const jitter = Math.sin(gameT*45 + b.rubbleSeed*9) * p * 8;
-        cx.fillStyle = shades[b.shade];
+        cx.fillStyle = b.ship ? '#323a46' : shades[b.shade];
+        // a ship piece slides straight down under the waterline rather than crumbling into a pile
         cx.fillRect(x + jitter, GROUND_Y - camY - remH, b.w, remH);
       }
       continue;
     }
     // facade
-    cx.fillStyle = shades[b.shade];
+    cx.fillStyle = b.ship ? '#323a46' : shades[b.shade];
     cx.fillRect(x, y, b.w, b.h);
     // destroyed cells: exposed interior with floor slabs (not blank void)
     for (let cj=0; cj<b.rows; cj++) {
@@ -1616,6 +2077,26 @@ function drawCity() {
     }
     cx.fillStyle = 'rgba(0,0,0,0.5)';
     cx.fillRect(x, y, b.w, 5);
+    if (b.ship) {
+      // red waterline stripe along the hull, and the bow taper past the last piece
+      cx.fillStyle = '#7a1e1e';
+      cx.fillRect(x, GROUND_Y - camY - 12, b.w, 9);
+      if (b.bow) {
+        cx.fillStyle = '#323a46';
+        cx.beginPath();
+        cx.moveTo(x + b.w, y + 6);
+        cx.quadraticCurveTo(x + b.w + 150, GROUND_Y - camY - 90, x + b.w + 175, GROUND_Y - camY - 4);
+        cx.lineTo(x + b.w, GROUND_Y - camY);
+        cx.closePath(); cx.fill();
+        cx.fillStyle = '#7a1e1e';
+        cx.beginPath();
+        cx.moveTo(x + b.w, GROUND_Y - camY - 12);
+        cx.lineTo(x + b.w + 168, GROUND_Y - camY - 12);
+        cx.lineTo(x + b.w + 175, GROUND_Y - camY - 4);
+        cx.lineTo(x + b.w, GROUND_Y - camY - 3);
+        cx.closePath(); cx.fill();
+      }
+    }
     if (b.ant) { cx.strokeStyle='#0c0a14'; cx.lineWidth=3; cx.beginPath(); cx.moveTo(x+b.w*0.3, y); cx.lineTo(x+b.w*0.3, y-46); cx.stroke();
       cx.fillStyle='rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2)))+')'; cx.beginPath(); cx.arc(x+b.w*0.3, y-48, 3.5, 0, 7); cx.fill(); }
     if (b.ac >= 0) { cx.fillStyle='#2a2438'; cx.fillRect(x+b.ac, y-14, 30, 14); }
@@ -1628,13 +2109,107 @@ function drawCity() {
     }
   }
   const gy = GROUND_Y - camY;
-  cx.fillStyle = '#141018'; cx.fillRect(0, gy, VW, VH-gy);
-  cx.fillStyle = '#241e2e'; cx.fillRect(0, gy, VW, 6);
-  cx.fillStyle = 'rgba(255,210,120,0.35)';
-  for (let lx = -((camX)%160); lx < VW; lx += 160) cx.fillRect(lx, gy+44, 70, 5);
+  const dockL = clamp(CITY_W - camX, 0, VW), waterL = clamp(WATER_X - camX, 0, VW);
+  // city streets
+  if (dockL > 0) {
+    cx.fillStyle = '#141018'; cx.fillRect(0, gy, dockL, VH-gy);
+    cx.fillStyle = '#241e2e'; cx.fillRect(0, gy, dockL, 6);
+    cx.fillStyle = 'rgba(255,210,120,0.35)';
+    for (let lx = -((camX)%160); lx < dockL; lx += 160) cx.fillRect(lx, gy+44, Math.min(70, Math.max(0, dockL-lx)), 5);
+  }
+  // the dock: concrete apron with a timber cap, bollards, and a gantry crane
+  if (waterL > dockL) {
+    cx.fillStyle = '#1e1b22'; cx.fillRect(dockL, gy, waterL-dockL, VH-gy);
+    cx.fillStyle = '#3a333e'; cx.fillRect(dockL, gy, waterL-dockL, 7);
+    cx.fillStyle = '#57492e'; cx.fillRect(dockL, gy+7, waterL-dockL, 3);
+    cx.fillStyle = '#0e0c12';
+    for (let bx = CITY_W + 110; bx < WATER_X - 40; bx += 230) {
+      const sx = bx - camX; if (sx < -10 || sx > VW+10) continue;
+      cx.fillRect(sx-4, gy-13, 8, 13);
+      cx.beginPath(); cx.arc(sx, gy-13, 5, Math.PI, 0); cx.fill();
+    }
+    // gantry crane silhouette
+    const crX = 33350 - camX;
+    if (crX > -400 && crX < VW+400) {
+      cx.strokeStyle = '#0d0b12'; cx.lineWidth = 10;
+      cx.beginPath(); cx.moveTo(crX, gy); cx.lineTo(crX, gy-420); cx.stroke();
+      cx.lineWidth = 7;
+      cx.beginPath(); cx.moveTo(crX-150, gy-390); cx.lineTo(crX+330, gy-390); cx.stroke();
+      cx.lineWidth = 3;
+      cx.beginPath();
+      cx.moveTo(crX, gy-420); cx.lineTo(crX+320, gy-392);
+      cx.moveTo(crX, gy-420); cx.lineTo(crX-140, gy-392);
+      cx.moveTo(crX+230, gy-388); cx.lineTo(crX+230, gy-160);
+      cx.stroke();
+      cx.fillStyle = '#0d0b12';
+      cx.fillRect(crX-24, gy-372, 48, 34);                       // operator cab
+      cx.fillRect(crX+218, gy-162, 24, 18);                      // hook block
+      cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2.4)))+')';
+      cx.beginPath(); cx.arc(crX, gy-424, 3.5, 0, 7); cx.fill(); // beacon
+    }
+    // shipping containers
+    for (const ct of containers) {
+      if (ct.dead) continue;
+      const sx = ct.x - camX; if (sx + ct.w < -20 || sx > VW+20) continue;
+      const sy = ct.y - camY;
+      cx.fillStyle = ct.c; cx.fillRect(sx, sy, ct.w, ct.h);
+      cx.fillStyle = 'rgba(0,0,0,0.3)';
+      for (let rx = 8; rx < ct.w-6; rx += 12) cx.fillRect(sx+rx, sy+3, 3, ct.h-6);   // corrugation
+      cx.fillStyle = 'rgba(0,0,0,0.45)'; cx.fillRect(sx, sy, 7, ct.h); cx.fillRect(sx+ct.w-7, sy, 7, ct.h);
+      cx.fillStyle = 'rgba(255,255,255,0.14)'; cx.fillRect(sx, sy, ct.w, 3);
+    }
+  }
+  // open water
+  if (waterL < VW) {
+    const wg = cx.createLinearGradient(0, gy, 0, gy + 560);
+    wg.addColorStop(0, '#16405a'); wg.addColorStop(0.5, '#0e2c42'); wg.addColorStop(1, '#081a2a');
+    cx.fillStyle = wg; cx.fillRect(waterL, gy, VW-waterL, VH-gy);
+    const fy = WATER_FLOOR - camY;
+    if (fy < VH) { cx.fillStyle = '#22302c'; cx.fillRect(waterL, fy, VW-waterL, VH-fy); }
+    // dock face pilings dropping into the water
+    if (waterL > 0 && waterL < VW) {
+      cx.fillStyle = '#241f1a';
+      cx.fillRect(waterL-6, gy, 10, Math.min(90, VH-gy));
+    }
+    // drifting blood clouds live behind the surface lines
+    for (const w of waterBloods) {
+      const x = w.x - camX, y = w.y - camY;
+      if (x < -w.r || x > VW + w.r) continue;
+      cx.globalAlpha = clamp(w.life / w.maxLife, 0, 1) * 0.42;
+      cx.fillStyle = '#8e1414';
+      cx.beginPath(); cx.arc(x, y, w.r, 0, 7); cx.fill();
+    }
+    cx.globalAlpha = 1;
+    // animated swell lines
+    cx.strokeStyle = 'rgba(190,230,245,0.5)'; cx.lineWidth = 2;
+    cx.beginPath();
+    for (let sx = waterL; sx <= VW; sx += 14) {
+      const wx = sx + camX;
+      const yy = gy + Math.sin(wx*0.012 + gameT*1.6)*3.2 + Math.sin(wx*0.004 - gameT*0.9)*2.2;
+      if (sx === waterL) cx.moveTo(sx, yy); else cx.lineTo(sx, yy);
+    }
+    cx.stroke();
+    cx.strokeStyle = 'rgba(140,190,215,0.22)';
+    cx.beginPath();
+    for (let sx = waterL; sx <= VW; sx += 18) {
+      const wx = sx + camX;
+      const yy = gy + 11 + Math.sin(wx*0.01 - gameT*1.1)*3;
+      if (sx === waterL) cx.moveTo(sx, yy); else cx.lineTo(sx, yy);
+    }
+    cx.stroke();
+    // sunset glints
+    cx.fillStyle = 'rgba(255,190,120,0.09)';
+    for (let sx = waterL + (gameT*22 % 46); sx < VW; sx += 46) cx.fillRect(sx, gy+4, 20, 3);
+  }
 }
 function drawDecals() {
-  cx.drawImage(decalCv, camX*DS, camY*DS, VW*DS, VH*DS, 0, 0, VW, VH);
+  // the decal canvas only spans the land zones — clamp the source rect so a camera out over
+  // the water (or above/below the canvas) never samples out of bounds
+  const sx = camX*DS, sy = Math.max(0, camY*DS);
+  const sw = Math.min(VW*DS, decalCv.width - sx);
+  const sh = Math.min(VH*DS - (sy - camY*DS), decalCv.height - sy);
+  if (sw <= 0 || sh <= 0) return;
+  cx.drawImage(decalCv, sx, sy, sw, sh, 0, (sy - camY*DS)/DS, sw/DS, sh/DS);
 }
 function drawATrain(a) {
   const x = a.x - camX, y = a.y - camY;
@@ -1723,6 +2298,102 @@ function drawMaeve(a) {
   cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-56, w, 6);
   cx.fillStyle = '#ff3b30'; cx.fillRect(x-w/2, y-56, w*hpFrac, 6);
 }
+function drawDeep(dp) {
+  const x = dp.x - camX, y = dp.y - camY;
+  if (x < -90 || x > VW+90) return;
+  const submerged = dp.state === 'lurk' || dp.state === 'grabdash' || dp.state === 'crouch' || dp.state === 'volley';
+  const fy = GROUND_Y - camY;
+  if (submerged) {
+    // only the fin breaks the surface; a dark shape glides beneath it
+    cx.fillStyle = 'rgba(13,58,52,0.5)';
+    cx.beginPath(); cx.ellipse(x, y - 4, 26, 11, 0, 0, 7); cx.fill();
+    cx.fillStyle = '#0d3a34';
+    cx.beginPath(); cx.moveTo(x - 11*dp.facing, fy + 1);
+    cx.quadraticCurveTo(x - 1*dp.facing, fy - 17, x + 9*dp.facing, fy + 1);
+    cx.closePath(); cx.fill();
+    cx.strokeStyle = 'rgba(200,235,250,0.45)'; cx.lineWidth = 1.5;
+    cx.beginPath(); cx.moveTo(x - dp.facing*12, fy + 1); cx.lineTo(x - dp.facing*34, fy + 1); cx.stroke();
+  } else {
+    // out of the water: full figure — green suit, dorsal fin, gills
+    cx.fillStyle = 'rgba(47,191,154,0.25)';
+    cx.beginPath(); cx.arc(x, y-14, 26, 0, 7); cx.fill();
+    cx.save(); cx.translate(x, y); cx.scale(dp.facing, 1);
+    if (dp.state === 'dolphin' && dp.stateT <= 0) {
+      // the dolphin he's riding
+      cx.fillStyle = '#7d8a94';
+      cx.beginPath(); cx.ellipse(2, 8, 30, 9, 0, 0, 7); cx.fill();
+      cx.beginPath(); cx.moveTo(30, 8); cx.lineTo(44, 4); cx.lineTo(40, 11); cx.closePath(); cx.fill();
+      cx.beginPath(); cx.moveTo(-26, 6); cx.lineTo(-36, -2); cx.lineTo(-30, 10); cx.closePath(); cx.fill();
+    }
+    const legBend = (dp.state === 'jump') ? 6 : 0;
+    cx.strokeStyle = '#15181c'; cx.lineWidth = 5;
+    cx.beginPath(); cx.moveTo(0,-14); cx.lineTo(-5,-legBend); cx.moveTo(0,-14); cx.lineTo(6,-legBend); cx.stroke();
+    cx.fillStyle = '#114b40'; cx.fillRect(-6,-30,12,17);
+    cx.fillStyle = '#2fbf9a'; cx.fillRect(-6,-30,12,5);
+    cx.fillStyle = '#0d3a34';   // dorsal fin on his back
+    cx.beginPath(); cx.moveTo(-6,-28); cx.lineTo(-14,-22); cx.lineTo(-6,-18); cx.closePath(); cx.fill();
+    if (dp.state === 'jump' || dp.state === 'carry') {
+      cx.strokeStyle = '#114b40'; cx.lineWidth = 4.5;
+      cx.beginPath(); cx.moveTo(5,-26); cx.lineTo(20,-30); cx.moveTo(-5,-26); cx.lineTo(-15,-21); cx.stroke();
+    }
+    cx.fillStyle = '#cfa080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
+    cx.fillStyle = '#5d4126'; cx.beginPath(); cx.arc(0,-37.5,5.8,Math.PI,0); cx.fill();
+    cx.strokeStyle = '#7a5a44'; cx.lineWidth = 1;   // gills
+    cx.beginPath(); cx.moveTo(3,-33); cx.lineTo(3,-30); cx.moveTo(5,-33); cx.lineTo(5,-30.5); cx.stroke();
+    cx.restore();
+  }
+  const w = 54, hpFrac = clamp(dp.hp/dp.maxHp, 0, 1);
+  const barY = submerged ? fy - 30 : y - 56;
+  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, barY, w, 6);
+  cx.fillStyle = '#2fbf9a'; cx.fillRect(x-w/2, barY, w*hpFrac, 6);
+}
+function drawTentacle(t) {
+  const x = t.x - camX;
+  if (x < -60 || x > VW+60) return;
+  const fy = GROUND_Y - camY;
+  if (t.phase === 'warn' || t.h <= 0) return;   // the warn phase is just the ripple rings
+  cx.strokeStyle = '#123b33'; cx.lineWidth = 13; cx.lineCap = 'round';
+  const sway = Math.sin(gameT*6 + t.x*0.01) * 8;
+  cx.beginPath();
+  cx.moveTo(x, fy + 8);
+  cx.quadraticCurveTo(x + sway, fy - t.h*0.55, x + sway*0.4, fy - t.h);
+  cx.stroke();
+  cx.strokeStyle = '#1d5a4c'; cx.lineWidth = 7;
+  cx.beginPath();
+  cx.moveTo(x, fy + 8);
+  cx.quadraticCurveTo(x + sway, fy - t.h*0.55, x + sway*0.4, fy - t.h);
+  cx.stroke();
+  cx.fillStyle = '#9adbc4';   // suckers
+  for (let i=1;i<=4;i++) {
+    const ty = fy - t.h*i/5;
+    cx.beginPath(); cx.arc(x + sway*(i/5)*0.8 - 3, ty, 1.8, 0, 7); cx.fill();
+  }
+}
+function drawSailShip() {
+  const sx = sailShip.x - camX;
+  if (sx > VW + 1800 || sx < -1800) return;
+  const gy = GROUND_Y - camY;
+  // silhouette matching the docked ship's proportions: stern hull, tower, bow hull + taper
+  const hullH = 276, towerH = 598;
+  cx.fillStyle = '#2a313c';
+  cx.fillRect(sx, gy - hullH, 612, hullH);
+  cx.fillRect(sx + 612, gy - towerH, 238, towerH);
+  cx.fillRect(sx + 850, gy - hullH, 578, hullH);
+  cx.beginPath();
+  cx.moveTo(sx + 1428, gy - hullH + 6);
+  cx.quadraticCurveTo(sx + 1578, gy - 90, sx + 1603, gy - 4);
+  cx.lineTo(sx + 1428, gy);
+  cx.closePath(); cx.fill();
+  cx.fillStyle = '#7a1e1e';
+  cx.fillRect(sx, gy - 12, 1596, 9);
+  cx.fillStyle = 'rgba(255,190,90,0.5)';   // a few lit portholes
+  for (let i=0;i<12;i++) cx.fillRect(sx + 60 + i*120, gy - hullH + 90, 10, 12);
+  cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2)))+')';
+  cx.beginPath(); cx.arc(sx + 731, gy - towerH - 8, 3.5, 0, 7); cx.fill();
+  // bow wake
+  cx.strokeStyle = 'rgba(200,235,250,0.5)'; cx.lineWidth = 2;
+  cx.beginPath(); cx.moveTo(sx + 1600, gy + 2); cx.lineTo(sx + 1690, gy + 6); cx.stroke();
+}
 function drawJet(j) {
   const x = j.x - camX, y = j.y - camY;
   if (x < -170*JET_SCALE || x > VW+170*JET_SCALE) return;
@@ -1766,6 +2437,14 @@ function drawGrunt(g) {
   if (x < -60 || x > VW+60) return;
   const walk = g.air ? 0 : Math.sin(g.stepT*9) * (Math.abs(g.vx)>5 ? 4 : 0);
   cx.save(); cx.translate(x, y);
+  if (g.boatG) {
+    // grey patrol boat under the gunner
+    cx.fillStyle = '#3a4046';
+    cx.beginPath(); cx.moveTo(-26, 0); cx.lineTo(26, 0); cx.lineTo(17, 11); cx.lineTo(-18, 11); cx.closePath(); cx.fill();
+    cx.fillStyle = '#2c3238'; cx.fillRect(-22, -5, 44, 5);
+    cx.strokeStyle = 'rgba(200,235,250,0.4)'; cx.lineWidth = 1.5;
+    cx.beginPath(); cx.moveTo(-30, 10); cx.lineTo(-38, 10); cx.moveTo(30, 10); cx.lineTo(38, 10); cx.stroke();
+  }
   if (g.air) {
     // jetpack flame
     cx.fillStyle = 'rgba(255,'+randi(140,200)+',60,0.85)';
@@ -1791,6 +2470,19 @@ function drawGrunt(g) {
 function drawCiv(c) {
   const x = c.x - camX, y = c.y - camY;
   if (x < -40 || x > VW+40) return;
+  if (c.swim) {
+    // just a bobbing head and a paddling arm above the swell
+    cx.save(); cx.translate(x, y);
+    cx.strokeStyle = 'rgba(200,235,250,0.5)'; cx.lineWidth = 1.5;
+    cx.beginPath(); cx.ellipse(0, -2, 12, 3, 0, 0, 7); cx.stroke();
+    cx.fillStyle = c.skin; cx.beginPath(); cx.arc(0, -8, 5, 0, 7); cx.fill();
+    if (c.w) { cx.fillStyle = '#2a2430'; cx.beginPath(); cx.arc(0, -10, 5, Math.PI, 0); cx.fill(); }
+    const arm = Math.sin(c.stepT*(c.panic>0?14:5));
+    cx.strokeStyle = c.top; cx.lineWidth = 3.4;
+    cx.beginPath(); cx.moveTo(0,-6); cx.lineTo(c.dir*8, -8 - arm*6); cx.stroke();
+    cx.restore();
+    return;
+  }
   const run = c.panic > 0;
   const walk = Math.sin(c.stepT*(run?16:7)) * (run?5:3);
   cx.save(); cx.translate(x, y); cx.scale(c.dir, 1);
@@ -1807,6 +2499,16 @@ function drawCiv(c) {
 function drawCar(car) {
   const x = car.x - camX, y = car.y - camY;
   if (x < -100 || x > VW+100) return;
+  if (car.kind === 'boat') {
+    cx.save(); cx.translate(x, y); cx.scale(car.dir, 1);
+    cx.fillStyle = car.c;
+    cx.beginPath(); cx.moveTo(-30, -8); cx.lineTo(30, -8); cx.lineTo(20, 5); cx.lineTo(-24, 5); cx.closePath(); cx.fill();
+    cx.fillStyle = 'rgba(150,200,230,0.5)'; cx.fillRect(-14, -16, 18, 8);
+    cx.fillStyle = car.c; cx.fillRect(-17, -17, 4, 9);
+    cx.fillStyle = 'rgba(0,0,0,0.25)'; cx.fillRect(-30, -8, 60, 3);
+    cx.restore();
+    return;
+  }
   const sc = car.scale || 1;
   cx.save(); cx.translate(x, y); cx.scale(car.dir*sc, sc);
   // body
@@ -2049,6 +2751,23 @@ function drawFx() {
   }
   cx.fillStyle = '#c01818';
   for (const b of bloods) cx.fillRect(b.x - camX - 1.5, b.y - camY - 1.5, 3, 3);
+  // rising bubbles (underwater)
+  cx.strokeStyle = 'rgba(200,235,250,0.6)'; cx.lineWidth = 1;
+  for (const b of bubbles) {
+    const x = b.x - camX, y = b.y - camY;
+    if (x < -10 || x > VW+10) continue;
+    cx.beginPath(); cx.arc(x, y, b.r, 0, 7); cx.stroke();
+  }
+  // The Deep's leaping fish
+  for (const f of fishes) {
+    const x = f.x - camX, y = f.y - camY;
+    if (x < -20 || x > VW+20) continue;
+    cx.save(); cx.translate(x, y); cx.rotate(Math.atan2(f.vy, f.vx));
+    cx.fillStyle = '#aebfc6';
+    cx.beginPath(); cx.ellipse(0, 0, 9, 3.4, 0, 0, 7); cx.fill();
+    cx.beginPath(); cx.moveTo(-8, 0); cx.lineTo(-14, -4); cx.lineTo(-14, 4); cx.closePath(); cx.fill();
+    cx.restore();
+  }
   for (const s of smokes) {
     cx.fillStyle = s.c + clamp(s.life*0.55, 0, 0.3) + ')';
     cx.beginPath(); cx.arc(s.x - camX, s.y - camY, s.r, 0, 7); cx.fill();
@@ -2124,17 +2843,28 @@ function draw() {
   drawCity();
   drawDecals();
   drawScorchFx();
+  if (sailShip) drawSailShip();
+  for (const t of tentacles) drawTentacle(t);
   for (const car of cars) if (car.dir < 0) drawCar(car);
   for (const c of civs) drawCiv(c);
   for (const g of grunts) drawGrunt(g);
   for (const a of atrains) if (!a.dead) drawATrain(a);
   for (const a of maeves) if (!a.dead) drawMaeve(a);
+  for (const d of deeps) if (!d.dead) drawDeep(d);
   for (const car of cars) if (car.dir > 0) drawCar(car);
   for (const s of supes) drawSupe(s);
   for (const h of helis) drawHeli(h);
   drawFx();
   drawPlayer();
   drawLaser();
+  // underwater tint: everything below the surface out in the water zone reads blue-green
+  {
+    const wl = clamp(WATER_X - camX, 0, VW), wgy = GROUND_Y - camY;
+    if (wl < VW && wgy < VH) {
+      cx.fillStyle = 'rgba(18,58,88,0.30)';
+      cx.fillRect(wl, Math.max(0, wgy), VW - wl, VH - Math.max(0, wgy));
+    }
+  }
   cx.restore();
   const v = cx.createRadialGradient(VW/2,VH/2,VH*0.45, VW/2,VH/2,VH*0.95);
   v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,0.42)');
