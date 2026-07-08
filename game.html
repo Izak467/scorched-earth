@@ -447,7 +447,7 @@ function thunderclap() {
   }
   for (const car of cars) if (!car.dead && dist2(car.x,car.y-10,P.x,P.y) < R*R) carBoom(car);
   for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,P.x,P.y) < R*R) {
-    s.hp -= 70; s.pressureT = 0; const d=Math.hypot(s.x-P.x,s.y-P.y)||1;
+    s.hp -= 70; const d=Math.hypot(s.x-P.x,s.y-P.y)||1;
     s.vx += (s.x-P.x)/d*900; s.vy += (s.y-P.y)/d*900;
     if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
   }
@@ -469,7 +469,6 @@ function thunderclap() {
     if (tk.hp<=0) tankDeath(tk);
   }
   for (const s of sharks) if (!s.dead && dist2(s.x,s.y,P.x,P.y) < R*R) sharkDeath(s);
-  for (const r of rescues) if (!r.falling && !r.gone && dist2(r.x,r.y,P.x,P.y) < R*R) { r.hp -= 130; if (r.hp<=0) rescueDown(r); }
   for (const t of trains) for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
     const cxw = trainCarX(t, i);
@@ -486,10 +485,10 @@ let grunts = [], civs = [], supes = [], helis = [], cars = [], bullets = [], roc
 let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = [], debris = [], embers = [];
 let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
 let deeps = [], fishes = [], tentacles = [];
-let trains = [], trainWrecks = [], tanks = [], shells = [], sharks = [], rescues = [];
+let trains = [], tanks = [], shells = [], sharks = [];
 let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70);
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
-let trainTimer = rand(10,18), tankTimer = rand(25,40), rescueTimer = rand(14,24);
+let trainTimer = rand(10,18), tankTimer = rand(25,40);
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
 const TRAIN_SCALE = 1.6;         // cars were reading too small against the buildings
 const CAR_SPACE = 118 * TRAIN_SCALE, CAR_HIT_R = 52 * TRAIN_SCALE, CAR_CENTER_OFF = 16 * TRAIN_SCALE;
@@ -535,13 +534,13 @@ function spawnGrunt(air) {
 }
 function spawnCiv() {
   const side = Math.random()<0.5 ? -1 : 1;
-  const x = clamp(P.x + side * rand(150, VW*0.55+600), 40, WORLD_W-40);
-  const swim = x > WATER_X + 40;   // out in the water they're swimmers
+  // water is boats and military only now — keep civilians on land
+  const x = clamp(P.x + side * rand(150, VW*0.55+600), 40, Math.min(WORLD_W-40, WATER_X - 20));
   const skins = ['#e2b892','#c99b6f','#a97b52','#8a5f3d'];
   const tops = ['#7a8fae','#ae7a7a','#7aae8b','#aea77a','#9b7aae','#c9c2b4','#5d6c80'];
-  civs.push({ x, y: swim ? GROUND_Y + 10 : GROUND_Y, dir: Math.random()<0.5?-1:1, sp: swim ? rand(14,30) : rand(28,55),
+  civs.push({ x, y: GROUND_Y, dir: Math.random()<0.5?-1:1, sp: rand(28,55),
     skin: skins[randi(0,3)], top: tops[randi(0,6)], pant: ['#39404d','#4d3939','#2e2e38'][randi(0,2)],
-    stepT: rand(0,9), panic: 0, dead: false, w: Math.random()<0.5, swim });
+    stepT: rand(0,9), panic: 0, dead: false, w: Math.random()<0.5, swim: false });
 }
 function spawnCar() {
   const side = Math.random()<0.5 ? -1 : 1;
@@ -582,8 +581,7 @@ function spawnStarlight() {
   const side = Math.random()<0.5 ? -1 : 1;
   supes.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
     vx: 0, vy: 0, hp: 1000, maxHp: 1000, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
-    smokeT: 0, flash: 0, boss: true, orbitDir: Math.random()<0.5?1:-1, atkCd: rand(0.6,1.0), atkType: 0,
-    pressureT: 0, hailQueue: 0, hailCd: 0 });
+    smokeT: 0, flash: 0, boss: true, orbitDir: Math.random()<0.5?1:-1, atkCd: rand(0.6,1.0) });
 }
 function spawnHeli() {
   const side = Math.random()<0.5 ? -1 : 1;
@@ -682,7 +680,7 @@ function spawnTrain() {
   const dir = Math.random()<0.5 ? -1 : 1;
   const n = 8;
   const cars = [];
-  for (let i=0;i<n;i++) cars.push({ hp: 260, dead: false });
+  for (let i=0;i<n;i++) cars.push({ hp: 190, dead: false });
   trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
 }
 function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
@@ -695,9 +693,13 @@ function trainCarDeath(t, i, cxw) {
   const tops = ['#7a8fae','#ae7a7a','#7aae8b','#aea77a'];
   for (let k=0;k<5;k++) fallers.push({ x: cxw+rand(-40,40)*TRAIN_SCALE, y: RAIL_Y-10*TRAIN_SCALE,
     vx: t.dir*t.sp*0.3+rand(-50,50), vy: rand(-60,20), skin: '#c8a080', top: tops[randi(0,3)], life: 5, dead: false });
-  // the car itself tears off the rail and falls into the street below
-  trainWrecks.push({ x: cxw, y: RAIL_Y-CAR_CENTER_OFF, vx: t.dir*t.sp*0.45 + rand(-40,40), vy: rand(-60,0),
-    rot: 0, vr: t.dir*rand(1.5,3.5), gone: false });
+  // the car doesn't fall as one rigid slab — it tears apart into hull chunks that each tumble
+  // into the street on their own arc, so it reads as crumbling rather than dropping intact
+  const wreckColors = ['#3d4a5d','#4a5568','#2f3947','#54607a'];
+  for (let k=0;k<9;k++) debris.push({ x: cxw+rand(-46,46)*TRAIN_SCALE, y: RAIL_Y-CAR_CENTER_OFF+rand(-10,10),
+    vx: t.dir*t.sp*0.3+rand(-120,120), vy: rand(-160,-20), rot: rand(0,7), vr: rand(-6,6),
+    r: rand(8,16)*TRAIN_SCALE*0.5, c: wreckColors[randi(0,3)], life: rand(2.5,4), heavy: true });
+  gibBurst(cxw, RAIL_Y-CAR_CENTER_OFF, 1.1, false, t.dir*t.sp*0.3, -80);
   shake(12); sfxBoom();
 }
 // ─── Tanks: late-game armor — slow, tough, shells that blow chunks out of buildings ───
@@ -728,21 +730,6 @@ function sharkDeath(s) {
   gibBurst(s.x, s.y, 1.3, false);
   waterBlood(s.x, s.y, 20);
 }
-// ─── Coast-guard rescue chopper: winches swimmers to safety — unless you object ───
-function spawnRescue() {
-  const side = Math.random()<0.5 ? -1 : 1;
-  rescues.push({ x: clamp(P.x + side*(VW*0.7), WATER_X+100, WORLD_W-150), y: GROUND_Y-560,
-    vx: 0, vy: 0, hp: 220, state: 'seek', cable: 0, target: null, dead: false, falling: false,
-    rot: 0, t: rand(0,9), smokeCd: 0, gone: false });
-}
-function rescueDown(r) {
-  if (r.falling) return;
-  r.falling = true; r.dead = true;
-  addKill(); addDamage(2.8e6);
-  if (r.target && r.target.rescued) { r.target.rescued = false; r.target.rescueFall = true; }   // passenger goes down with it
-  r.vy = -60; r.vx = rand(-80,80);
-}
-
 // ─── Destruction ───
 const CELL_COST = 2200;   // smaller cells, smaller price each
 // tunable combat balance knobs — bump/drop these, not the individual damage lines, to rebalance
@@ -894,7 +881,7 @@ function explode(x, y, r, cellFrac, hostile, scale) {
     for (const g of grunts) if (!g.dead && dist2(g.x,g.y-16,x,y) < r*r) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
     for (const c of civs) if (!c.dead && dist2(c.x,c.y-14,x,y) < r*r) { c.dead=true; gibBurst(c.x,c.y-14,1.1); addKill(); }
     for (const car of cars) if (!car.dead && dist2(car.x,car.y-10,x,y) < r*r) carBoom(car);
-    for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,x,y) < r*r) { s.hp -= 55; s.pressureT = 0; if (s.hp<=0) { gibBurst(s.x,s.y,1.5,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } } }
+    for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,x,y) < r*r) { s.hp -= 55; if (s.hp<=0) { gibBurst(s.x,s.y,1.5,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } } }
   }
   if (dist2(P.x,P.y,x,y) < (r+30)*(r+30)) {
     const d = Math.hypot(P.x-x,P.y-y)||1;
@@ -1008,7 +995,6 @@ function update(dt) {
     for (const car of cars) if (!car.dead && dist2(P.x,P.y,car.x,car.y-10) < 64*64) carBoom(car);
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
       s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT : 0;
-      s.pressureT = 0;
       s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
@@ -1044,7 +1030,6 @@ function update(dt) {
       if (tk.hp <= 0) tankDeath(tk);
     }
     for (const s of sharks) if (!s.dead && dist2(P.x,P.y,s.x,s.y) < 70*70) sharkDeath(s);
-    for (const r of rescues) if (!r.falling && !r.gone && dist2(P.x,P.y,r.x,r.y) < 95*95) rescueDown(r);
     damageCellsInRadius(P.x + P.dashDir.x*24, P.y + P.dashDir.y*24, 46, 1);
     // slamming over open water: punch through the surface with a splash, bottom out at the sea floor
     if (P.dashDir.y > 0.5 && P.x > WATER_X) {
@@ -1250,6 +1235,16 @@ function update(dt) {
         stopD = t; hitJet = j; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null;
       }
     }
+    // sharks got the same treatment last time this bit them: checked only against the beam's
+    // already-clipped endpoint, the beam visually sailed right through them without ever stopping
+    let hitShark = null;
+    for (const s of sharks) {
+      if (s.dead) continue;
+      const t = clamp((s.x-ex)*ux + (s.y-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - s.x, ey+uy*t - s.y) < 20) {
+        stopD = t; hitShark = s; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null;
+      }
+    }
     beamEndX = ex + ux*stopD; beamEndY = ey + uy*stopD;
     const DPS = 315 * LASER_DMG_MULT;
     if (hitB && hitI >= 0) {
@@ -1258,7 +1253,7 @@ function update(dt) {
       if (Math.random()<0.3) smokes.push({ x:beamEndX, y:beamEndY, r:rand(4,9), vr:rand(14,26), vy:rand(-40,-15), life:rand(0.4,0.8), c:'rgba(80,72,84,' });
     } else if (hitSupe) {
       const s = hitSupe;
-      s.hp -= DPS*dt; s.pressureT = 0; s.smokeT = 0.1; s.flash = 0.1;
+      s.hp -= DPS*dt; s.smokeT = 0.1; s.flash = 0.1;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-5,5), y:beamEndY+rand(-6,6), vx:rand(-140,140), vy:rand(-180,20), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffbb44':'#ff5533' });
       if (Math.random()<0.35) smokes.push({ x:s.x+rand(-8,8), y:s.y+rand(-10,6), r:rand(4,8), vr:rand(12,22), vy:rand(-50,-20), life:rand(0.35,0.7), c:'rgba(70,62,74,' });
       if (s.hp <= 0) { gibBurst(s.x, s.y, 1.5, true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
@@ -1277,6 +1272,11 @@ function update(dt) {
       hitJet.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-8,8), y:beamEndY+rand(-8,8), vx:rand(-160,160), vy:rand(-120,40), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
       if (hitJet.hp <= 0) jetDeath(hitJet);
+    } else if (hitShark) {
+      const s = hitShark;
+      s.hp -= 450*dt*LASER_DMG_MULT;
+      if (Math.random()<0.6) bubbleAt(s.x+rand(-10,10), s.y-rand(0,10));
+      if (s.hp <= 0) sharkDeath(s);
     }
     // fodder caught anywhere along the (possibly shortened) beam still melts
     for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, ex, ey, beamEndX, beamEndY) < 16) {
@@ -1298,28 +1298,6 @@ function update(dt) {
       tk.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.6) sparks.push({x:tk.x+rand(-16,16),y:tk.y-20,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
       if (tk.hp <= 0) tankDeath(tk);
-    }
-    for (const s of sharks) if (!s.dead && segDist(s.x, s.y, ex, ey, beamEndX, beamEndY) < 20) {
-      s.hp -= 450*dt*LASER_DMG_MULT;
-      if (Math.random()<0.6) bubbleAt(s.x+rand(-10,10), s.y-rand(0,10));
-      if (s.hp <= 0) sharkDeath(s);
-    }
-    for (const r of rescues) if (!r.falling && !r.gone) {
-      if (segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 38) {
-        r.hp -= 450*dt*LASER_DMG_MULT;
-        if (Math.random()<0.6) sparks.push({x:r.x+rand(-14,14),y:r.y+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
-        if (r.hp <= 0) rescueDown(r);
-      } else if (r.cable > 24) {
-        // check the winch cable itself — one clean cut drops whoever's on it
-        for (let cy = 20; cy < r.cable; cy += 26) {
-          if (segDist(r.x, r.y + cy, ex, ey, beamEndX, beamEndY) < 7) {
-            sparks.push({x:r.x, y:r.y+cy, vx:rand(-80,80), vy:rand(-80,80), life:0.3, c:'#ffdd66'});
-            if (r.target && r.target.rescued) { r.target.rescued = false; r.target.rescueFall = true; r.target = null; }
-            r.cable = 0; r.state = 'leave'; sfxCrack();
-            break;
-          }
-        }
-      }
     }
     for (const a of atrains) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
       a.hp -= 380*dt*LASER_DMG_MULT;
@@ -1446,29 +1424,6 @@ function update(dt) {
   for (const c of civs) {
     if (c.dead) continue;
     c.stepT += dt;
-    if (c.rescued) continue;   // dangling from the coast-guard winch — the chopper moves them
-    if (c.rescueFall) {
-      // the cable got cut (or the chopper died) — long way down
-      c.rescueVy = (c.rescueVy || 0) + 1400*dt;
-      c.y += c.rescueVy*dt;
-      if (c.y >= GROUND_Y + 8) { c.dead = true; splash(c.x, 400); gibBurst(c.x, GROUND_Y+24, 1.1); addKill(); }
-      continue;
-    }
-    if (c.swim) {
-      // swimmer: slow paddle, bobbing on the surface; panicked swimmers thrash away fast
-      const spd = c.panic > 0 ? 75 : c.sp;
-      if (c.panic > 0) {
-        c.panic -= dt; c.x += c.dir * spd * dt;
-        if (Math.random() < dt*6) sparks.push({ x: c.x+rand(-8,8), y: GROUND_Y+2, vx: rand(-40,40), vy: -rand(40,90), life: rand(0.2,0.4), c: '#cfe9f5' });
-      } else {
-        c.x += c.dir * spd * dt;
-        if (Math.random() < dt*0.2) c.dir = -c.dir;
-      }
-      c.y = GROUND_Y + 10 + Math.sin(c.stepT*2.4)*3;
-      if (c.x < WATER_X + 25) { c.x = WATER_X + 25; c.dir = 1; }
-      if (c.x > WORLD_W - 30) c.dir = -1;
-      continue;
-    }
     if (c.panic > 0) { c.panic -= dt; c.x += c.dir * 170 * dt; }
     else {
       c.x += c.dir * c.sp * dt;
@@ -1528,43 +1483,12 @@ function update(dt) {
       s.x = clamp(s.x + s.vx*dt, 60, WORLD_W-60);
       s.y = clamp(s.y + s.vy*dt, 120, GROUND_Y-200);
       s.atkCd -= dt;
-      if (s.atkCd <= 0) {
-        const fireBolt = (s.atkType === 0 && boltLockout <= 0);
-        if (fireBolt) {
-          const a = Math.atan2(P.y-s.y, P.x-s.x);
-          electroBolts.push({ x: s.x, y: s.y, vx: Math.cos(a)*1088, vy: Math.sin(a)*1088, life: 2.2 });
-          noiseBurst(0.15, 1400, 0.12, 'highpass');
-          s.atkType = 1;
-          s.atkCd = rand(1.3, 1.9);   // bolts a bit less frequent than before
-        } else {
-          for (let k=0;k<3;k++) {
-            const src = pickLightSource(s.x);
-            if (!src) continue;
-            const a = Math.atan2(P.y-src.y, P.x-src.x);
-            lightBalls.push({ x: src.x, y: src.y, vx: Math.cos(a)*380, vy: Math.sin(a)*380, life: 3 });
-          }
-          if (s.atkType === 1) s.atkType = 0;   // only advance when it was genuinely her light-ball turn
-          s.atkCd = rand(0.8, 1.3);
-        }
-      }
-      // leave her alone too long and she stops rationing light-balls — a rapid-fire hail pulled
-      // from every lamp and window she can reach, hitting harder than her normal potshots
-      s.pressureT += dt;
-      if (s.pressureT > 4.5 && s.hailQueue <= 0) {
-        s.hailQueue = randi(3,6);
-        s.pressureT = 0;
-        rings.push({x:s.x,y:s.y,r:14,life:0.5,w:5});
-        noiseBurst(0.2, 1000, 0.1, 'highpass');
-      }
-      if (s.hailQueue > 0) {
-        s.hailCd -= dt;
-        if (s.hailCd <= 0) {
-          const src = pickLightSource(s.x) || {x:s.x, y:s.y};
-          const a = Math.atan2(P.y-src.y, P.x-src.x);
-          lightBalls.push({ x: src.x, y: src.y, vx: Math.cos(a)*460, vy: Math.sin(a)*460, life: 3, hail: true });
-          s.hailQueue--;
-          s.hailCd = rand(0.1, 0.16);
-        }
+      // light-ball/hail attack pulled for now, revisit later — bolts only in the meantime
+      if (s.atkCd <= 0 && boltLockout <= 0) {
+        const a = Math.atan2(P.y-s.y, P.x-s.x);
+        electroBolts.push({ x: s.x, y: s.y, vx: Math.cos(a)*1088, vy: Math.sin(a)*1088, life: 2.2 });
+        noiseBurst(0.15, 1400, 0.12, 'highpass');
+        s.atkCd = rand(1.0, 1.5);
       }
       continue;
     }
@@ -2164,18 +2088,6 @@ function update(dt) {
     const tail = t.x - t.dir*(t.cars.length-1)*CAR_SPACE;
     return t.dir > 0 ? tail < CITY_W + 300 : tail > -300;
   });
-  // wrecked cars tear off the rail and crash into the street below
-  for (const w of trainWrecks) {
-    w.vy += 1300*dt;
-    w.x += w.vx*dt; w.y += w.vy*dt; w.rot += w.vr*dt;
-    const s = surfaceBelow(w.x, w.y - 20);
-    if (w.y >= s - 14) {
-      w.gone = true;
-      explode(w.x, s-12, 88, 0.8);
-      bakeScorch(w.x, s, 42);
-    }
-  }
-  trainWrecks = trainWrecks.filter(w => !w.gone);
 
   // ── tanks (late-game armor escalation) ──
   if (kills > 500) {
@@ -2216,20 +2128,18 @@ function update(dt) {
   }
   shells = shells.filter(s => s.life > 0);
 
-  // ── sharks: blood in the water draws them in to hunt the swimmers ──
+  // ── sharks: hunt the player the moment he's in the water; blood just draws more of them in ──
   if (sharks.length < 3 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
   for (const s of sharks) {
     if (s.dead) continue;
     s.t += dt; s.feedT -= dt; s.biteCd -= dt;
-    // a submerged player is the priority target — they dive down and actually hunt you underwater
-    // instead of only ever gliding along at the surface after swimmers
-    const huntPlayer = inWater(P.x, P.y) && P.y > GROUND_Y + 20 && Math.abs(P.x - s.x) < 1000;
+    const huntPlayer = inWater(P.x, P.y) && Math.abs(P.x - s.x) < 1300;
     if (huntPlayer) {
       const dx = P.x - s.x, dy = P.y - s.y, dd = Math.hypot(dx,dy) || 1;
       const dart = dd < 320;
-      s.vx += (dx/dd) * (dart ? 900 : 260) * dt; s.vy += (dy/dd) * (dart ? 900 : 260) * dt;
-      s.vx = clamp(s.vx, dart ? -560 : -220, dart ? 560 : 220);
-      s.vy = clamp(s.vy, dart ? -560 : -220, dart ? 560 : 220);
+      s.vx += (dx/dd) * (dart ? 900 : 340) * dt; s.vy += (dy/dd) * (dart ? 900 : 340) * dt;
+      s.vx = clamp(s.vx, dart ? -560 : -280, dart ? 560 : 280);
+      s.vy = clamp(s.vy, dart ? -560 : -280, dart ? 560 : 280);
       s.y += s.vy*dt;
       if (dd < 42 && s.biteCd <= 0) {
         const kd = dd || 1;
@@ -2239,35 +2149,10 @@ function update(dt) {
         waterBlood(P.x, P.y, rand(8,14));   // now you're bleeding too — draws the rest of them in
       }
     } else {
-      let tx = null, best = 1e9;
-      for (const c of civs) if (!c.dead && c.swim && !c.rescued && !c.rescueFall) {
-        const d = Math.abs(c.x - s.x); if (d < best) { best = d; tx = c; }
-      }
-      if (tx && best < 900) {
-        const dart = best < 260;
-        if (dart) { tx.panic = 3; tx.dir = tx.x < s.x ? -1 : 1; }   // they see the fin coming
-        s.vx += Math.sign(tx.x - s.x) * (dart ? 900 : 220) * dt;
-        s.vx = clamp(s.vx, dart ? -520 : -180, dart ? 520 : 180);
-        if (best < 24) {
-          // a lighter kill than gibBurst on purpose — sharks can chain through several swimmers back
-          // to back, and gibBurst's full shake+thump stacking across every one of those made the
-          // screen feel like it never stopped rumbling, even for kills you never actually saw happen
-          tx.dead = true; addKill();
-          for (let i=0;i<7;i++) {
-            const ga = rand(0, Math.PI*2), sp = rand(60,200);
-            gibs.push({ x: tx.x, y: GROUND_Y+22, vx: Math.cos(ga)*sp, vy: Math.sin(ga)*sp-rand(40,120),
-              rot: rand(0,Math.PI*2), vr: rand(-9,9), r: rand(3,6), c: GIB_COLORS[randi(0,3)], life: rand(2,3) });
-          }
-          waterBlood(tx.x, GROUND_Y+16, rand(10,16));
-          splash(tx.x, 220); sfxSplat();
-          s.feedT = 16;
-        }
-      } else {
-        let bx = null, bb = 1e9;
-        for (const w of waterBloods) { const d = Math.abs(w.x - s.x); if (d < bb) { bb = d; bx = w; } }
-        if (bx) s.vx += Math.sign(bx.x - s.x) * 160 * dt;
-        s.vx = clamp(s.vx, -160, 160);
-      }
+      let bx = null, bb = 1e9;
+      for (const w of waterBloods) { const d = Math.abs(w.x - s.x); if (d < bb) { bb = d; bx = w; } }
+      if (bx) s.vx += Math.sign(bx.x - s.x) * 160 * dt;
+      s.vx = clamp(s.vx, -160, 160);
       // settle back to a normal patrol depth just under the surface when not actively diving on you
       s.y += ((GROUND_Y + 40 + Math.sin(s.t*1.4)*10) - s.y) * Math.min(1, dt*3);
     }
@@ -2279,60 +2164,6 @@ function update(dt) {
   }
   sharks = sharks.filter(s => !s.dead);
 
-  // ── coast-guard rescue chopper ──
-  rescueTimer -= dt;
-  if (rescueTimer <= 0 && rescues.length < 1 && P.x > WATER_X - VW &&
-      civs.some(c => c.swim && !c.dead && !c.rescued)) { spawnRescue(); rescueTimer = rand(20, 32); }
-  for (const r of rescues) {
-    r.t += dt;
-    if (r.falling) {
-      r.vy += 900*dt; r.rot += dt*6;
-      r.x += r.vx*dt; r.y += r.vy*dt;
-      r.smokeCd -= dt;
-      if (r.smokeCd <= 0) { r.smokeCd = 0.05; smokes.push({x:r.x, y:r.y, r:rand(8,15), vr:rand(20,38), vy:rand(-25,0), life:rand(0.5,0.9), c:'rgba(96,90,100,'}); }
-      if (r.y >= GROUND_Y - 12) { r.gone = true; explode(r.x, GROUND_Y-8, 80, 0.3, false, 0.8); splash(r.x, 900); }
-      continue;
-    }
-    if (r.target && r.target.dead) { r.target = null; r.state = 'seek'; }
-    if (r.state === 'seek') {
-      if (!r.target) {
-        let best = 1e9;
-        for (const c of civs) if (c.swim && !c.dead && !c.rescued && !c.rescueFall) {
-          const d = Math.abs(c.x - r.x); if (d < best) { best = d; r.target = c; }
-        }
-        if (!r.target) r.state = 'leave';
-      }
-      if (r.target) {
-        const wy = GROUND_Y - 330;
-        r.vx += clamp(r.target.x - r.x, -260, 260)*dt*1.5;
-        r.vy += clamp(wy - r.y, -200, 200)*dt*1.5;
-        r.vx -= r.vx*1.7*dt; r.vy -= r.vy*1.9*dt;
-        r.x += r.vx*dt; r.y += r.vy*dt;
-        if (Math.abs(r.x - r.target.x) < 26 && Math.abs(r.y - wy) < 40) r.state = 'lower';
-      }
-    } else if (r.state === 'lower') {
-      r.vx *= 1 - 2*dt; r.vy *= 1 - 2*dt;
-      r.x += r.vx*dt + (r.target ? clamp(r.target.x - r.x, -40, 40)*dt : 0);
-      r.cable = Math.min(GROUND_Y - 8 - r.y, r.cable + 230*dt);
-      if (r.target && r.y + r.cable >= GROUND_Y - 12 && Math.abs(r.x - r.target.x) < 24) {
-        r.state = 'winch'; r.target.rescued = true;
-      } else if (!r.target) { r.state = 'leave'; }
-    } else if (r.state === 'winch') {
-      r.cable -= 140*dt;
-      if (r.target) { r.target.x = r.x; r.target.y = r.y + r.cable + 12; }
-      if (r.cable <= 46) r.state = 'leave';
-    } else {   // leave — climb away with (or without) the lucky one
-      r.vx += 120*dt; r.vy -= 110*dt;
-      r.vx = clamp(r.vx, -320, 320); r.vy = clamp(r.vy, -260, 60);
-      r.x += r.vx*dt; r.y += r.vy*dt;
-      if (r.target && r.target.rescued) { r.target.x = r.x; r.target.y = r.y + Math.max(r.cable, 24) + 12; }
-      if (r.y < -250 || r.x > WORLD_W + 300) {
-        r.gone = true;
-        if (r.target && r.target.rescued) r.target.dead = true;   // safely away — no kill credit for you
-      }
-    }
-  }
-  rescues = rescues.filter(r => !r.gone);
 
   // ── rockets (fast, mildly homing, hostile) ──
   for (const r of rockets) {
@@ -3053,16 +2884,6 @@ function drawTrain(t) {
     cx.globalAlpha = 1;
   }
 }
-function drawTrainWreck(w) {
-  const x = w.x - camX, y = w.y - camY;
-  if (x < -90*TRAIN_SCALE || x > VW+90*TRAIN_SCALE) return;
-  cx.save(); cx.translate(x, y); cx.rotate(w.rot); cx.scale(TRAIN_SCALE, TRAIN_SCALE);
-  cx.fillStyle = '#3d4a5d'; cx.fillRect(-52, -14, 104, 26);
-  cx.fillStyle = 'rgba(255,150,60,0.7)';
-  for (let wx=-42; wx<44; wx+=17) cx.fillRect(wx, -9, 11, 10);       // burning windows
-  cx.restore();
-  if (Math.random() < 0.5) smokes.push({x: w.x, y: w.y, r: rand(6,12), vr: rand(16,30), vy: rand(-30,-10), life: rand(0.3,0.6), c:'rgba(90,80,90,'});
-}
 function drawTank(tk) {
   const x = tk.x - camX, y = tk.y - camY;
   if (x < -90 || x > VW+90) return;
@@ -3088,10 +2909,6 @@ function drawShark(s) {
   const x = s.x - camX, y = s.y - camY;
   if (x < -60 || x > VW+60) return;
   const fy = GROUND_Y - camY;
-  // a faint always-on glow so a shark diving on you doesn't just vanish into the dark water —
-  // matches the treatment every boss got for the same reason
-  cx.fillStyle = 'rgba(210,225,235,0.18)';
-  cx.beginPath(); cx.arc(x, y, 30, 0, 7); cx.fill();
   // body gliding under, brighter belly highlight for contrast against the dark water
   cx.fillStyle = 'rgba(120,140,152,0.85)';
   cx.beginPath(); cx.ellipse(x, y, 24, 8, 0, 0, 7); cx.fill();
@@ -3109,30 +2926,6 @@ function drawShark(s) {
     cx.closePath(); cx.fill();
     cx.strokeStyle = 'rgba(200,235,250,0.4)'; cx.lineWidth = 1.2;
     cx.beginPath(); cx.moveTo(x - s.facing*10, fy+1); cx.lineTo(x - s.facing*26, fy+1); cx.stroke();
-  }
-}
-function drawRescue(r) {
-  const x = r.x - camX, y = r.y - camY;
-  if (x < -90 || x > VW+90) return;
-  cx.save(); cx.translate(x, y); cx.rotate(r.rot);
-  // white hull with an orange stripe — unmistakably not military
-  cx.fillStyle = '#e8e4dc';
-  cx.beginPath(); cx.ellipse(0, 0, 24, 13, 0, 0, 7); cx.fill();
-  cx.fillStyle = '#e07820'; cx.fillRect(-24, -3, 48, 6);
-  cx.fillStyle = '#e8e4dc'; cx.fillRect(-52, -8, 30, 8);            // tail boom
-  cx.fillStyle = 'rgba(150,210,235,0.6)';
-  cx.beginPath(); cx.ellipse(11, -3, 9, 7, 0, 0, 7); cx.fill();
-  const spin = Math.sin(gameT*40);
-  cx.strokeStyle = 'rgba(210,215,220,0.7)'; cx.lineWidth = 3;
-  cx.beginPath(); cx.moveTo(-42*spin, -16); cx.lineTo(42*spin, -16); cx.stroke();
-  cx.fillStyle = '#1a1f1c'; cx.fillRect(-2, -16, 4, 5);
-  cx.restore();
-  // winch cable + basket
-  if (!r.falling && r.cable > 4) {
-    cx.strokeStyle = '#c9c2b4'; cx.lineWidth = 1.6;
-    cx.beginPath(); cx.moveTo(x, y+12); cx.lineTo(x, y + 12 + r.cable); cx.stroke();
-    cx.strokeStyle = '#8a8274'; cx.lineWidth = 3;
-    cx.beginPath(); cx.arc(x, y + 14 + r.cable, 7, 0, Math.PI); cx.stroke();
   }
 }
 function drawJet(j) {
@@ -3529,10 +3322,12 @@ function drawFx() {
     cx.lineWidth = 2;
     cx.beginPath(); cx.arc(rp.x - camX, rp.y - camY, rp.r, 0, 7); cx.stroke();
   }
-  cx.fillStyle = '#ffdf80';
+  // dimmer and smaller than they used to be — realistic to have this many in the air, but at full
+  // brightness every one of them was competing with the actual action for the eye
+  cx.fillStyle = 'rgba(230,195,120,0.55)';
   for (const b of bullets) {
     cx.save(); cx.translate(b.x - camX, b.y - camY); cx.rotate(Math.atan2(b.vy,b.vx));
-    cx.fillRect(-7,-1.2,14,2.4); cx.restore();
+    cx.fillRect(-5,-0.8,10,1.6); cx.restore();
   }
   for (const eb of electroBolts) {
     cx.save(); cx.translate(eb.x - camX, eb.y - camY); cx.rotate(Math.atan2(eb.vy,eb.vx));
@@ -3600,7 +3395,6 @@ function draw() {
   drawScorchFx();
   if (sailShip) drawSailShip();
   for (const t of trains) drawTrain(t);
-  for (const w of trainWrecks) drawTrainWreck(w);
   for (const t of tentacles) drawTentacle(t);
   for (const s of sharks) if (!s.dead) drawShark(s);
   for (const car of cars) if (car.dir < 0) drawCar(car);
@@ -3613,7 +3407,6 @@ function draw() {
   for (const car of cars) if (car.dir > 0) drawCar(car);
   for (const s of supes) drawSupe(s);
   for (const h of helis) drawHeli(h);
-  for (const r of rescues) if (!r.gone) drawRescue(r);
   drawFx();
   drawPlayer();
   drawLaser();
