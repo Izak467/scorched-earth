@@ -651,7 +651,7 @@ function deepDeath(dp) {
 // ─── Elevated train: multi-car passenger trains crossing the city on the rail line ───
 function spawnTrain() {
   const dir = Math.random()<0.5 ? -1 : 1;
-  const n = randi(4, 7);
+  const n = 8;
   const cars = [];
   for (let i=0;i<n;i++) cars.push({ hp: 260, dead: false });
   trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
@@ -842,8 +842,8 @@ function collapseBuilding(b) {
 // scale (0-1) trims the particle-heavy visuals for frequent/small blasts (cars) without touching gameplay radius
 function explode(x, y, r, cellFrac, hostile, scale) {
   scale = scale === undefined ? 1 : scale;
-  // hitting the ship/dock structure still fireballs like any building; open water just splashes —
-  // no fire, no smoke plume, nothing that reads as "damage" out where there's nothing to damage
+  // an explosion should only read as an explosion (fireball, boom, shake) when it's actually
+  // damaging the ship/dock structure — anything landing in open water is just a splash, not a blast
   const shipHere = x > WATER_X && (() => { const b = findBuildingAt(x); return b && !b.collapsed && !b.collapsing; })();
   const openWater = x > WATER_X && y > GROUND_Y - 20 && !shipHere;
   if (!openWater) {
@@ -857,9 +857,6 @@ function explode(x, y, r, cellFrac, hostile, scale) {
     const nSmoke = Math.round(8*scale);
     for (let i=0;i<nSmoke;i++) smokes.push({ x: x+rand(-14,14), y: y+rand(-14,14), r: rand(10,22),
       vr: rand(26,50), vy: rand(-50,-15), life: rand(0.5,1.0), c: 'rgba(105,94,106,' });
-  } else {
-    for (let i=0;i<Math.round(6*scale);i++) smokes.push({ x: x+rand(-10,10), y: GROUND_Y-4, r: rand(6,12),
-      vr: rand(18,34), vy: rand(-50,-25), life: rand(0.35,0.7), c: 'rgba(220,230,235,' });
   }
   if (!hostile) {
     for (const g of grunts) if (!g.dead && dist2(g.x,g.y-16,x,y) < r*r) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
@@ -874,8 +871,11 @@ function explode(x, y, r, cellFrac, hostile, scale) {
   }
   damageCellsInRadius(x, y, r*0.85, cellFrac === undefined ? 1 : cellFrac);
   flashScorch(x, Math.min(y, GROUND_Y), r*0.5);
-  if (x > WATER_X && y > GROUND_Y - r) { splash(x, r*6); for (let i=0;i<8;i++) bubbleAt(x+rand(-r,r)*0.6, Math.max(y, GROUND_Y+10)+rand(-20,20)); }
-  shake(8); sfxBoom();
+  if (x > WATER_X && y > GROUND_Y - r) {
+    splash(x, openWater ? r*2.5 : r*6);
+    for (let i=0;i<(openWater?3:8);i++) bubbleAt(x+rand(-r,r)*0.6, Math.max(y, GROUND_Y+10)+rand(-20,20));
+  }
+  if (!openWater) { shake(8); sfxBoom(); }
   panicNear(x, 800);
 }
 function carBoom(car) {
@@ -1954,6 +1954,10 @@ function update(dt) {
   tentacles = tentacles.filter(t => !t.gone);
 
   // ── the docked ship: sink → wait → replacement sails in from the far right ──
+  // a hull missing two of its three sections is severed, not standing — the last piece goes down with it
+  if (shipPieces.filter(p => p.collapsed || p.collapsing).length >= 2) {
+    for (const p of shipPieces) if (!p.collapsed && !p.collapsing) collapseBuilding(p);
+  }
   if (shipRespawnT === 0 && !sailShip && shipPieces.every(p => p.collapsed)) shipRespawnT = 20;
   if (shipRespawnT > 0) {
     shipRespawnT -= dt;
@@ -2590,13 +2594,14 @@ function drawDecals() {
   if (sw <= 0 || sh <= 0) return;
   cx.drawImage(decalCv, sx, sy, sw, sh, 0, (sy - camY*DS)/DS, sw/DS, sh/DS);
 }
+const BOSS_SCALE = 1.35;   // every boss renders at the same oversized scale, so none reads as "just another mob"
 function drawATrain(a) {
   const x = a.x - camX, y = a.y - camY;
   if (x < -60 || x > VW+60) return;
   const charging = a.state === 'charge', winding = a.state === 'wind';
   // always-on glow so he doesn't get lost against dark buildings/street at ground level
   cx.fillStyle = 'rgba(60,150,255,0.35)';
-  cx.beginPath(); cx.arc(x, y-16, 28, 0, 7); cx.fill();
+  cx.beginPath(); cx.arc(x, y-18, 34, 0, 7); cx.fill();
   if (a.state === 'run' || charging) {
     // electric blur trail: a couple of ghost copies of his torso, offset back along his motion —
     // reads as "moving too fast to see cleanly" rather than just a couple of speed lines
@@ -2609,7 +2614,7 @@ function drawATrain(a) {
     }
     cx.globalAlpha = 1;
   }
-  cx.save(); cx.translate(x, y); cx.scale(a.facing, 1);
+  cx.save(); cx.translate(x, y); cx.scale(a.facing*BOSS_SCALE, BOSS_SCALE);
   if (a.state === 'run' || charging) {
     // jagged electric crackle instead of plain straight speed lines
     cx.strokeStyle = 'rgba(120,210,255,'+(charging?0.85:0.55)+')'; cx.lineWidth = 2; cx.lineCap = 'round';
@@ -2633,17 +2638,17 @@ function drawATrain(a) {
   cx.fillStyle = '#2f8fff'; cx.fillRect(-6,-30,12,6);
   cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
   cx.restore();
-  const w = 54, hpFrac = clamp(a.hp/a.maxHp, 0, 1);
-  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-56, w, 6);
-  cx.fillStyle = '#2f8fff'; cx.fillRect(x-w/2, y-56, w*hpFrac, 6);
+  const w = 60, hpFrac = clamp(a.hp/a.maxHp, 0, 1);
+  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-62, w, 7);
+  cx.fillStyle = '#2f8fff'; cx.fillRect(x-w/2, y-62, w*hpFrac, 7);
 }
 function drawMaeve(a) {
   const x = a.x - camX, y = a.y - camY;
   if (x < -60 || x > VW+60) return;
   const crouching = a.state === 'crouch', jumping = a.state === 'jump';
   cx.fillStyle = 'rgba(255,40,40,0.32)';
-  cx.beginPath(); cx.arc(x, y-16, 28, 0, 7); cx.fill();
-  cx.save(); cx.translate(x, y); cx.scale(a.facing, 1);
+  cx.beginPath(); cx.arc(x, y-18, 34, 0, 7); cx.fill();
+  cx.save(); cx.translate(x, y); cx.scale(a.facing*BOSS_SCALE, BOSS_SCALE);
   if (crouching) {
     cx.fillStyle = 'rgba(255,60,40,'+(0.3+0.3*Math.abs(Math.sin(gameT*30)))+')';
     cx.beginPath(); cx.arc(0,-20,26,0,7); cx.fill();
@@ -2673,9 +2678,9 @@ function drawMaeve(a) {
   cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
   cx.fillStyle = '#2a1a14'; cx.beginPath(); cx.arc(0,-38,6,Math.PI,0); cx.fill();
   cx.restore();
-  const w = 54, hpFrac = clamp(a.hp/a.maxHp, 0, 1);
-  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-56, w, 6);
-  cx.fillStyle = '#ff3b30'; cx.fillRect(x-w/2, y-56, w*hpFrac, 6);
+  const w = 60, hpFrac = clamp(a.hp/a.maxHp, 0, 1);
+  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-62, w, 7);
+  cx.fillStyle = '#ff3b30'; cx.fillRect(x-w/2, y-62, w*hpFrac, 7);
 }
 function drawDeep(dp) {
   const x = dp.x - camX, y = dp.y - camY;
@@ -2683,6 +2688,10 @@ function drawDeep(dp) {
   const submerged = dp.state === 'lurk' || dp.state === 'grabdash' || dp.state === 'crouch' || dp.state === 'volley';
   const fy = GROUND_Y - camY;
   if (submerged) {
+    // always-on glow so he doesn't vanish against the water the way the other bosses never
+    // vanish against the street — this is his most common state, so it matters most here
+    cx.fillStyle = 'rgba(47,191,154,0.32)';
+    cx.beginPath(); cx.arc(x, fy - 6, 28, 0, 7); cx.fill();
     // only the fin breaks the surface; a dark shape glides beneath it
     cx.fillStyle = 'rgba(13,58,52,0.5)';
     cx.beginPath(); cx.ellipse(x, y - 4, 26, 11, 0, 0, 7); cx.fill();
@@ -2694,9 +2703,9 @@ function drawDeep(dp) {
     cx.beginPath(); cx.moveTo(x - dp.facing*12, fy + 1); cx.lineTo(x - dp.facing*34, fy + 1); cx.stroke();
   } else {
     // out of the water: full figure — green suit, dorsal fin, gills
-    cx.fillStyle = 'rgba(47,191,154,0.25)';
-    cx.beginPath(); cx.arc(x, y-14, 26, 0, 7); cx.fill();
-    cx.save(); cx.translate(x, y); cx.scale(dp.facing, 1);
+    cx.fillStyle = 'rgba(47,191,154,0.35)';
+    cx.beginPath(); cx.arc(x, y-18, 34, 0, 7); cx.fill();
+    cx.save(); cx.translate(x, y); cx.scale(dp.facing*BOSS_SCALE, BOSS_SCALE);
     if (dp.state === 'dolphin' && dp.stateT <= 0) {
       // the dolphin he's riding
       cx.fillStyle = '#7d8a94';
@@ -2721,10 +2730,10 @@ function drawDeep(dp) {
     cx.beginPath(); cx.moveTo(3,-33); cx.lineTo(3,-30); cx.moveTo(5,-33); cx.lineTo(5,-30.5); cx.stroke();
     cx.restore();
   }
-  const w = 54, hpFrac = clamp(dp.hp/dp.maxHp, 0, 1);
-  const barY = submerged ? fy - 30 : y - 56;
-  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, barY, w, 6);
-  cx.fillStyle = '#2fbf9a'; cx.fillRect(x-w/2, barY, w*hpFrac, 6);
+  const w = 60, hpFrac = clamp(dp.hp/dp.maxHp, 0, 1);
+  const barY = submerged ? fy - 32 : y - 62;
+  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, barY, w, 7);
+  cx.fillStyle = '#2fbf9a'; cx.fillRect(x-w/2, barY, w*hpFrac, 7);
 }
 function drawTentacle(t) {
   const x = t.x - camX;
@@ -2789,10 +2798,17 @@ function drawSailShip() {
 function drawTrain(t) {
   for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
-    const cxw = trainCarX(t, i) - camX, cy = RAIL_Y - camY;
+    const carWX = trainCarX(t, i);
+    const cxw = carWX - camX, cy = RAIL_Y - camY;
     if (cxw < -80*TRAIN_SCALE || cxw > VW+80*TRAIN_SCALE) continue;
+    // the rail only exists across the city — fade each car out as it nears either end instead of
+    // letting it run off the end of the visible track and hang in open air over the dock
+    const distToEnd = Math.min(carWX, CITY_W - carWX);
+    const alpha = clamp(distToEnd / 260, 0, 1);
+    if (alpha <= 0) continue;
+    cx.globalAlpha = alpha;
     cx.save(); cx.translate(cxw, cy); cx.scale(t.dir*TRAIN_SCALE, TRAIN_SCALE);
-    cx.fillStyle = i === 0 ? '#5d2d33' : '#3d4a5d';                 // engine leads, coaches follow
+    cx.fillStyle = i % 2 === 0 ? '#5d2d33' : '#3d4a5d';             // cars alternate red/blue
     cx.fillRect(-52, -30, 104, 26);
     cx.fillStyle = 'rgba(255,205,110,0.8)';                          // lit windows + passengers
     for (let wx=-42; wx<44; wx+=17) {
@@ -2804,6 +2820,7 @@ function drawTrain(t) {
     cx.fillRect(-42, -5, 22, 6); cx.fillRect(20, -5, 22, 6);
     if (i === 0) { cx.fillStyle = 'rgba(255,240,190,0.9)'; cx.fillRect(50, -20, 4, 7); }   // headlight
     cx.restore();
+    cx.globalAlpha = 1;
   }
 }
 function drawTrainWreck(w) {
@@ -3040,7 +3057,7 @@ function drawSupe(s) {
   const x = s.x - camX, y = s.y - camY;
   if (x < -110 || x > VW+110) return;
   const f = (P.x >= s.x) ? 1 : -1;
-  const sc = s.boss ? 1.35 : 1;
+  const sc = s.boss ? BOSS_SCALE : 1;
   cx.save(); cx.translate(x, y); cx.scale(f*sc, sc);
   if (s.boss) {
     cx.fillStyle = 'rgba(255,225,120,0.45)';
