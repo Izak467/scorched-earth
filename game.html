@@ -105,7 +105,7 @@ function splash(x, mag) {
 }
 function waterBlood(x, y, r) {
   waterBloods.push({ x, y: Math.max(y, GROUND_Y+8), r, vr: rand(3,7),
-    vx: rand(-9,9), vy: rand(3,10), life: rand(20,30), maxLife: 26 });
+    vx: rand(-9,9), vy: rand(3,10), life: rand(35,50), maxLife: 42 });
 }
 function bubbleAt(x, y) {
   bubbles.push({ x, y, vy: -rand(35,85), vx: rand(-10,10), r: rand(1.2,3), life: rand(0.6,1.6) });
@@ -126,9 +126,17 @@ const fgBuildings = [];
     const bigCols = cols/2, bigRows = rows/2;
     for (let c=0;c<bigCols;c++) for (let r=0;r<bigRows;r++)
       if (Math.random()<0.55) wins.push({c, r, warm:Math.random()<0.75, civ:Math.random()<0.22});
+    // most buildings are the plain window-grid default; the rest get a distinct archetype so the
+    // single most-repeated action in the game (knocking one down) doesn't always play out the same
+    const archRoll = Math.random();
+    const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
     fgBuildings.push({x, w, h, cols, rows, roofY: GROUND_Y-h, shade: randi(0,2), wins, cells,
       destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
-      ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07});
+      ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07,
+      // sparse rooftop landmarks — low odds each so the skyline doesn't get busy, and a billboard
+      // stays lit until you actually shoot it out, a distinct "I did that" moment from a distance
+      billboard: (w > 260 && Math.random()<0.1) ? { lit: true } : null,
+      watertower: w > 200 && Math.random()<0.08, archetype});
     x += w + rand(180, 460);
   }
 })();
@@ -161,6 +169,31 @@ function resetShip() {
     for (let c=0;c<b.cols/2;c++) for (let r=0;r<b.rows/2;r++)
       if (Math.random()<0.6) b.wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
   }
+}
+// ─── Street furniture: sparse, one-hit, no AI — texture between building-scale destruction ───
+const streetProps = [];
+(function genStreetProps(){
+  let x = 60;
+  while (x < CITY_W - 100) {
+    const r = Math.random();
+    if (r < 0.09) streetProps.push({ x, type: 'light', dead: false });
+    else if (r < 0.15) streetProps.push({ x, type: 'hydrant', dead: false, geyserT: 0 });
+    x += rand(220, 420);
+  }
+})();
+function streetLightBoom(p) {
+  if (p.dead) return;
+  p.dead = true;
+  for (let i=0;i<4;i++) debris.push({ x: p.x+rand(-4,4), y: GROUND_Y-118, vx: rand(-90,90), vy: rand(-140,-20),
+    rot: rand(0,7), vr: rand(-6,6), r: rand(3,6), c: '#2a2634', life: rand(1,2) });
+  for (let i=0;i<6;i++) sparks.push({x:p.x, y:GROUND_Y-118, vx:rand(-100,100), vy:rand(-120,20), life:rand(0.15,0.35), c:'#ffdd66'});
+  sfxCrack(); shake(3);
+}
+function hydrantBoom(p) {
+  if (p.dead || p.geyserT > 0) return;
+  p.geyserT = rand(3.5, 5);
+  splash(p.x, 260);
+  sfxCrack();
 }
 // ─── Dock containers: destructible stacked props — cuttable, dashable, topple and crush ───
 const containers = [];
@@ -470,7 +503,7 @@ function thunderclap() {
     dp.hp -= 90*deepDamageMult(dp);
     if (dp.hp<=0) deepDeath(dp);
   }
-  for (const tk of tanks) if (!tk.dead && dist2(tk.x,tk.y-20,P.x,P.y) < R*R) {
+  for (const tk of tanks) if (!tk.dead && dist2(tk.x,tk.y-20*TANK_SCALE,P.x,P.y) < R*R) {
     tk.hp -= 150;
     if (tk.hp<=0) tankDeath(tk);
   }
@@ -478,7 +511,7 @@ function thunderclap() {
   for (const t of trains) for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
     const cxw = trainCarX(t, i);
-    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; c.flash = 0.15; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
+    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
   }
   // detonate incoming rockets mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
@@ -491,11 +524,11 @@ let grunts = [], civs = [], supes = [], helis = [], cars = [], bullets = [], roc
 let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = [], debris = [], embers = [];
 let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
 let mirrorBeam = null;   // Maeve's braced shield reflects an active second beam segment — set fresh each frame it's live
-let deeps = [], fishes = [], tentacles = [];
+let deeps = [], fishes = [];
 let trains = [], tanks = [], shells = [], sharks = [];
 let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70);
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
-let trainTimer = rand(10,18), tankTimer = rand(25,40);
+let trainTimer = rand(10,18), tankTimer = rand(18,28);
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
 const TRAIN_SCALE = 1.6;         // cars were reading too small against the buildings
 const CAR_SPACE = 118 * TRAIN_SCALE, CAR_HIT_R = 52 * TRAIN_SCALE, CAR_CENTER_OFF = 16 * TRAIN_SCALE;
@@ -663,7 +696,7 @@ function spawnMaeve() {
     hp: 1600, maxHp: 1600, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
     facing: 1, dead: false, atkCd: rand(1.5,2.4), jumpVx: 0, jumpVy: 0,
     braceCd: rand(3,5), braceTele: 0, fleeing: false, fleeT: 0,
-    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.5,3) });
+    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.5,3), laserHitT: 0, hitFlag: false });
 }
 function maeveBraced(a) { return a.state === 'brace' && a.braceTele <= 0; }
 function maeveDeath(a) {
@@ -675,8 +708,8 @@ function maeveDeath(a) {
   announceBossKill('QUEEN MAEVE', a.x, a.y-16);
 }
 // The Deep: water boss. Lurks under the surface with only a fin showing, breach-lunges at you
-// over the water, grabs you if you linger underwater 3s+, and mixes in a surface dolphin charge,
-// leaping-fish volleys, and tentacle grabs that punish hovering low over the waves.
+// over the water, grabs you if you linger underwater 3s+, and mixes in a surface dolphin charge
+// and leaping-fish volleys.
 // two resistance tiers instead of one flat number: fully under the surface he's 8x tougher,
 // right at the surface (dolphin charge, breaching windups) he's 4x tougher, and fully exposed
 // (breaching clear of the water, or on the dock) it's full damage
@@ -690,7 +723,7 @@ function deepDamageMult(dp) {
 function spawnDeep() {
   deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
     hp: 1200, maxHp: 1200, state: 'lurk', stateT: rand(1,2), facing: -1, dead: false,
-    atkCd: rand(1.6,2.6), tentCd: 5, jumpVx: 0, jumpVy: 0, chargeDir: 1, fleeing: false, fleeT: 0,
+    atkCd: rand(1.6,2.6), jumpVx: 0, jumpVy: 0, chargeDir: 1, fleeing: false, fleeT: 0,
     weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.6,2.8) });
 }
 function deepDeath(dp) {
@@ -709,7 +742,7 @@ function spawnTrain() {
   const dir = Math.random()<0.5 ? -1 : 1;
   const n = 8;
   const cars = [];
-  for (let i=0;i<n;i++) cars.push({ hp: 190, dead: false, flash: 0 });
+  for (let i=0;i<n;i++) cars.push({ hp: 190, dead: false });
   trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
 }
 function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
@@ -731,6 +764,10 @@ function trainCarDeath(t, i, cxw) {
     vx: t.dir*t.sp*0.3+rand(-120,120), vy: rand(-160,-20), rot: rand(0,7), vr: rand(-6,6),
     r: rand(8,16)*TRAIN_SCALE*0.5, c: wreckColors[randi(0,3)], life: rand(2.5,4), heavy: true });
   gibBurst(cxw, RAIL_Y-CAR_CENTER_OFF, 1.1, false, t.dir*t.sp*0.3, -80);
+  // one clean mark on the street below where the wreckage came down — used to bake one per
+  // debris chunk, which stacked into a solid black blotch that never faded when several chunks
+  // (or several cars, chained) landed near the same spot
+  bakeScorch(cxw, GROUND_Y, 26);
   shake(12); sfxBoom(); freezeT = Math.max(freezeT, 0.05);
   // a car left standing alone with no live neighbor on either side isn't attached to anything
   // anymore — it goes too, and this can chain down the whole rest of the train
@@ -752,9 +789,9 @@ function tankDeath(tk) {
   if (tk.dead) return;
   tk.dead = true;
   addKill(); addDamage(4e6);
-  explode(tk.x, tk.y-16, 85, 0.5, false, 0.9);
+  explode(tk.x, tk.y-16*TANK_SCALE, 85, 0.5, false, 0.9);
   bakeScorch(tk.x, GROUND_Y, 46);
-  for (let k=0;k<6;k++) debris.push({ x: tk.x+rand(-20,20), y: tk.y-16, vx: rand(-220,220), vy: rand(-320,-80),
+  for (let k=0;k<6;k++) debris.push({ x: tk.x+rand(-20,20)*TANK_SCALE, y: tk.y-16*TANK_SCALE, vx: rand(-220,220), vy: rand(-320,-80),
     rot: rand(0,7), vr: rand(-6,6), r: rand(4,9), c: '#2c352f', life: rand(1.5,3), heavy: true });
   shake(14); freezeT = Math.max(freezeT, 0.05);
 }
@@ -783,15 +820,35 @@ const JUGGLE_DMG_MULT = 1.5;
 function isJuggled(s) { return s.launchedT > 0; }
 const LASER_CELL_RATE = 16.5 * LASER_DMG_MULT;   // fill-per-second on a cell the beam (or player) is drilling through
 const JET_SCALE = 2.3;
+const SHARK_SCALE = 1.3;   // a bit bigger — easier to actually make out against the dark water
+const TANK_SCALE = 1.7;    // was barely readable next to everything else at street scale
 function destroyCell(b, i, wx, wy, quiet) {
   if (b.cells[i] >= 1) return;
   b.cells[i] = 1; b.destroyed++; b.dirty = true;
   addDamage(CELL_COST);
   const ci = i % b.cols, cj = Math.floor(i / b.cols);
   killWindowCiv(b, ci, cj);
-  for (let k=0;k<2;k++) debris.push({ x: wx+rand(-8,8), y: wy+rand(-8,8),
-    vx: rand(-140,140), vy: rand(-200,30), rot: rand(0,7), vr: rand(-7,7),
-    r: rand(2.5,5.5), c: ['#2e2638','#241e2e','#3a3346'][randi(0,2)], life: rand(1.5,3) });
+  // each archetype breaks apart differently — same cell system underneath, different payoff
+  if (b.archetype === 'glass') {
+    for (let k=0;k<3;k++) debris.push({ x: wx+rand(-8,8), y: wy+rand(-8,8),
+      vx: rand(-220,220), vy: rand(-260,20), rot: rand(0,7), vr: rand(-10,10),
+      r: rand(2,4.5), c: ['#bcd8e8','#8fb8cc','#e8f4fa'][randi(0,2)], life: rand(0.8,1.6), shard: true });
+    if (Math.random()<0.6) sparks.push({ x: wx, y: wy, vx: rand(-120,120), vy: rand(-140,20), life: rand(0.15,0.3), c: '#eaf6ff' });
+  } else if (b.archetype === 'brick') {
+    for (let k=0;k<2;k++) debris.push({ x: wx+rand(-8,8), y: wy+rand(-8,8),
+      vx: rand(-120,120), vy: rand(-180,20), rot: rand(0,7), vr: rand(-6,6),
+      r: rand(2.5,5.5), c: ['#7a3f2e','#8a4a35','#5e2f22'][randi(0,2)], life: rand(1.5,3) });
+    if (Math.random()<0.5) smokes.push({ x: wx, y: wy, r: rand(4,8), vr: rand(10,18), vy: rand(-25,-10), life: rand(0.3,0.6), c: 'rgba(120,90,70,' });
+  } else if (b.archetype === 'construction') {
+    for (let k=0;k<2;k++) debris.push({ x: wx+rand(-8,8), y: wy+rand(-8,8),
+      vx: rand(-160,160), vy: rand(-220,30), rot: rand(0,7), vr: rand(-8,8),
+      r: rand(2.5,5), c: ['#4a4a52','#5a5a62','#3a3a40'][randi(0,2)], life: rand(1.5,3) });
+    if (Math.random()<0.7) sparks.push({ x: wx, y: wy, vx: rand(-100,100), vy: rand(-140,20), life: rand(0.15,0.3), c: '#ffdd66' });
+  } else {
+    for (let k=0;k<2;k++) debris.push({ x: wx+rand(-8,8), y: wy+rand(-8,8),
+      vx: rand(-140,140), vy: rand(-200,30), rot: rand(0,7), vr: rand(-7,7),
+      r: rand(2.5,5.5), c: ['#2e2638','#241e2e','#3a3346'][randi(0,2)], life: rand(1.5,3) });
+  }
   if (!quiet) sfxCrack();
   // the ship is stitched together from three huge pieces — hold each to a lower threshold or
   // sinking the whole thing takes forever compared to a normal building
@@ -1047,6 +1104,10 @@ function update(dt) {
     for (const g of grunts) if (!g.dead && dist2(P.x,P.y,g.x,g.y-16) < 62*62) { g.dead=true; gibBurst(g.x,g.y-16,1.3,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
     for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
     for (const car of cars) if (!car.dead && dist2(P.x,P.y,car.x,car.y-10) < 64*64) carBoom(car);
+    for (const p of streetProps) if (!p.dead) {
+      if (p.type === 'light' && dist2(P.x,P.y,p.x,GROUND_Y-118) < 60*60) streetLightBoom(p);
+      else if (p.type === 'hydrant' && p.geyserT <= 0 && dist2(P.x,P.y,p.x,GROUND_Y-10) < 50*50) hydrantBoom(p);
+    }
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
       // checked before this dash's own launch below — rewards catching a target already airborne
       // from an earlier hit, not just this one
@@ -1083,12 +1144,12 @@ function update(dt) {
       if (dp.hp<=0) deepDeath(dp);
     }
     for (const ct of containers) if (!ct.dead && dist2(P.x,P.y,ct.x+ct.w/2,ct.y+ct.h/2) < 82*82) containerBoom(ct);
-    for (const tk of tanks) if (!tk.dead && dist2(P.x,P.y,tk.x,tk.y-20) < 78*78) {
+    for (const tk of tanks) if (!tk.dead && dist2(P.x,P.y,tk.x,tk.y-20*TANK_SCALE) < (78*TANK_SCALE)*(78*TANK_SCALE)) {
       tk.hp -= 400*DASH_DMG_MULT;
-      rings.push({x:tk.x,y:tk.y-20,r:10,life:0.4,w:3});
+      rings.push({x:tk.x,y:tk.y-20*TANK_SCALE,r:10,life:0.4,w:3});
       if (tk.hp <= 0) tankDeath(tk);
     }
-    for (const s of sharks) if (!s.dead && dist2(P.x,P.y,s.x,s.y) < 70*70) sharkDeath(s);
+    for (const s of sharks) if (!s.dead && dist2(P.x,P.y,s.x,s.y) < (70*SHARK_SCALE)*(70*SHARK_SCALE)) sharkDeath(s);
     damageCellsInRadius(P.x + P.dashDir.x*24, P.y + P.dashDir.y*24, 46, 1);
     // a slam from just above the ground and a slam from the top of the tallest building used to
     // land identically — scale the payoff with how far he actually fell, 1x for a short hop up to
@@ -1307,7 +1368,7 @@ function update(dt) {
     for (const s of sharks) {
       if (s.dead) continue;
       const t = clamp((s.x-ex)*ux + (s.y-ey)*uy, 0, tlen);
-      if (t < stopD && Math.hypot(ex+ux*t - s.x, ey+uy*t - s.y) < 20) {
+      if (t < stopD && Math.hypot(ex+ux*t - s.x, ey+uy*t - s.y) < 20*SHARK_SCALE) {
         stopD = t; hitShark = s; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null;
       }
     }
@@ -1317,6 +1378,9 @@ function update(dt) {
       hitB.cells[hitI] += dt * LASER_CELL_RATE;
       if (hitB.cells[hitI] >= 1) { hitB.cells[hitI] = 0.999; destroyCell(hitB, hitI, beamEndX, beamEndY); }
       if (Math.random()<0.3) smokes.push({ x:beamEndX, y:beamEndY, r:rand(4,9), vr:rand(14,26), vy:rand(-40,-15), life:rand(0.4,0.8), c:'rgba(80,72,84,' });
+      // glowing embers mixed into the smoke/debris while the beam is actively cutting into
+      // masonry or hull plating — reads as hot material, not just generic smoke
+      if (Math.random()<0.35) embers.push({ x:beamEndX+rand(-6,6), y:beamEndY+rand(-6,6), vx:rand(-25,25), vy:rand(-90,-30), life:rand(0.4,0.8), r:rand(1,2.2) });
     } else if (hitSupe) {
       const s = hitSupe;
       s.hp -= DPS*dt*(isJuggled(s) ? JUGGLE_DMG_MULT : 1); s.smokeT = 0.1; s.flash = 0.1;
@@ -1330,7 +1394,7 @@ function update(dt) {
       if (h.hp <= 0) heliDeath(h);
     } else if (hitTrain) {
       const c = hitTrain.tr.cars[hitTrain.i];
-      c.hp -= 450*dt*LASER_DMG_MULT; c.flash = 0.15;
+      c.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.6) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
       if (c.hp <= 0) trainCarDeath(hitTrain.tr, hitTrain.i, hitTrain.cxw);
     } else if (hitJet) {
@@ -1352,6 +1416,20 @@ function update(dt) {
       c.dead = true; gibBurst(c.x, c.y-14, 1); addKill();
     }
     for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, ex, ey, beamEndX, beamEndY) < 20) carBoom(car);
+    // a lit billboard goes dark the instant the beam clips it — a landmark you can pick off from
+    // a distance, separate from the building's own cell-by-cell damage
+    for (const b of fgBuildings) if (b.billboard && b.billboard.lit && !b.collapsed && !b.collapsing) {
+      const bbx = b.x + b.w*0.35, bby = b.roofY - 64;
+      if (segDist(bbx, bby, ex, ey, beamEndX, beamEndY) < 30) {
+        b.billboard.lit = false;
+        for (let i=0;i<6;i++) sparks.push({x:bbx+rand(-15,15), y:bby+rand(-10,10), vx:rand(-100,100), vy:rand(-140,-20), life:rand(0.15,0.35), c:'#ffdd66'});
+        sfxCrack();
+      }
+    }
+    for (const p of streetProps) if (!p.dead) {
+      if (p.type === 'light' && segDist(p.x, GROUND_Y-118, ex, ey, beamEndX, beamEndY) < 12) streetLightBoom(p);
+      else if (p.type === 'hydrant' && p.geyserT <= 0 && segDist(p.x, GROUND_Y-10, ex, ey, beamEndX, beamEndY) < 14) hydrantBoom(p);
+    }
     for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
       r.gone = true; explode(r.x, r.y, 46, 0, true);
     }
@@ -1367,9 +1445,9 @@ function update(dt) {
       if (ct.hp <= 0) containerBoom(ct);
     }
     for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
-    for (const tk of tanks) if (!tk.dead && segDist(tk.x, tk.y-20, ex, ey, beamEndX, beamEndY) < 34) {
+    for (const tk of tanks) if (!tk.dead && segDist(tk.x, tk.y-20*TANK_SCALE, ex, ey, beamEndX, beamEndY) < 34*TANK_SCALE) {
       tk.hp -= 450*dt*LASER_DMG_MULT;
-      if (Math.random()<0.6) sparks.push({x:tk.x+rand(-16,16),y:tk.y-20,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
+      if (Math.random()<0.6) sparks.push({x:tk.x+rand(-16,16),y:tk.y-20*TANK_SCALE,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
       if (tk.hp <= 0) tankDeath(tk);
     }
     for (const a of atrains) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
@@ -1412,6 +1490,12 @@ function update(dt) {
       } else {
         a.hp -= 380*dt*LASER_DMG_MULT;
         if (Math.random()<0.5) sparks.push({x:a.x,y:a.y-20,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+        // held the beam on her long enough — she throws the shield up in reaction instead of just
+        // standing there and taking it, rather than only ever bracing on her own fixed timer
+        a.laserHitT += dt; a.hitFlag = true;
+        if (a.laserHitT > 0.6 && a.state !== 'brace') {
+          a.state = 'brace'; a.stateT = 1.3; a.braceTele = 0.35; a.braceCd = rand(5.5, 7.5); a.laserHitT = 0;
+        }
         if (a.hp <= 0) maeveDeath(a);
       }
     }
@@ -1703,6 +1787,13 @@ function update(dt) {
   }
   jets = jets.filter(j => !j.dead && Math.abs(j.x-P.x) < VW*3);
 
+  // ── broken hydrants: a lingering water geyser instead of an instant one-off splash ──
+  for (const p of streetProps) if (p.type === 'hydrant' && p.geyserT > 0) {
+    p.geyserT -= dt;
+    if (Math.random() < dt*30) sparks.push({ x: p.x+rand(-4,4), y: GROUND_Y-8, vx: rand(-30,30), vy: -rand(160,320),
+      life: rand(0.3,0.6), c: Math.random()<0.5 ? '#bfe2f2' : '#e8f6fc' });
+    if (p.geyserT <= 0) p.dead = true;
+  }
   // ── dock containers: gravity-settle onto the stack (or dock) below, crush on landing ──
   for (const ct of containers) {
     if (ct.dead) continue;
@@ -1882,6 +1973,8 @@ function update(dt) {
   // ── Queen Maeve (ground/rooftop grappler boss) ──
   for (const a of maeves) {
     if (a.dead) continue;
+    if (!a.hitFlag) a.laserHitT = 0;   // only counts consecutive frames actually under the beam
+    a.hitFlag = false;
 
     // sniped from out past the shallows she can wade into — she can't ever close that gap, so
     // rather than just standing at the waterline eating free damage forever she gives up and
@@ -2015,7 +2108,7 @@ function update(dt) {
   // ── The Deep (water boss) ──
   for (const dp of deeps) {
     if (dp.dead) continue;
-    dp.atkCd -= dt; dp.tentCd -= dt;
+    dp.atkCd -= dt;
 
     // sniped from deep in the city, well past even the dock he can chase you across — he can't
     // ever close that gap, so he retreats into open water rather than sitting there taking it
@@ -2061,11 +2154,6 @@ function update(dt) {
         else if (r < 0.72) { dp.state = 'volley'; dp.stateT = 0.3; }
         else { dp.state = 'dolphin'; dp.stateT = 0.35; dp.chargeDir = P.x >= dp.x ? 1 : -1; }
         dp.atkCd = rand(1.7, 2.6);
-      }
-      // tentacle from below punishes hovering lazily just over the waves
-      if (dp.tentCd <= 0 && P.x > WATER_X + 80 && P.y > GROUND_Y - 170 && P.y < GROUND_Y - 4) {
-        tentacles.push({ x: clamp(P.x + P.vx*0.25, WATER_X+60, WORLD_W-60), phase: 'warn', t: 0.45, h: 0, grabbed: false });
-        dp.tentCd = rand(5, 8);
       }
     } else if (dp.state === 'crouch') {
       dp.stateT -= dt;
@@ -2182,31 +2270,6 @@ function update(dt) {
   }
   fishes = fishes.filter(f => f.life > 0);
 
-  // ── The Deep's tentacles (rise under a low-hovering player) ──
-  for (const t of tentacles) {
-    t.t -= dt;
-    const canGrab = (t.phase === 'up' || t.phase === 'hold');
-    if (t.phase === 'warn') {
-      if (Math.random() < dt*18) rings.push({x: t.x, y: GROUND_Y, r: 4, life: 0.35, w: 2});
-      if (t.t <= 0) { t.phase = 'up'; t.t = 0.2; splash(t.x, 300); }
-    } else if (t.phase === 'up') {
-      t.h = Math.min(215, t.h + 1500*dt);
-      if (t.t <= 0) { t.phase = 'hold'; t.t = 0.3; }
-    } else if (t.phase === 'hold') {
-      if (t.t <= 0) t.phase = 'down';
-    } else {
-      t.h -= 900*dt;
-      if (t.h <= 0) t.gone = true;
-    }
-    if (canGrab && !t.grabbed && Math.abs(P.x - t.x) < 44 && P.y > GROUND_Y - t.h - 20 && P.y < GROUND_Y) {
-      // snags him and yanks him down to the surface for a beat
-      t.grabbed = true;
-      P.x = t.x; P.y = GROUND_Y - 30; P.vx *= 0.2; P.vy = 0; P.dashT = 0;
-      P.stunT = Math.max(P.stunT, 0.45); P.hurtFlash = 1; shake(10); sfxHit();
-    }
-  }
-  tentacles = tentacles.filter(t => !t.gone);
-
   // ── the docked ship: sink → wait → replacement sails in from the far right ──
   // a hull missing two of its three sections is severed, not standing — the last piece goes down with it
   if (shipPieces.filter(p => p.collapsed || p.collapsing).length >= 2) {
@@ -2234,7 +2297,6 @@ function update(dt) {
     t.x += t.dir * t.sp * dt; t.t += dt;
     for (let i=0;i<t.cars.length;i++) {
       const c = t.cars[i]; if (c.dead) continue;
-      if (c.flash > 0) c.flash -= dt;
       const cxw = trainCarX(t, i);
       // plowing into a car (flying or dashing) wrecks it
       if (dist2(P.x, P.y, cxw, RAIL_Y-CAR_CENTER_OFF) < (66*TRAIN_SCALE)*(66*TRAIN_SCALE)) trainCarDeath(t, i, cxw);
@@ -2249,7 +2311,7 @@ function update(dt) {
   // ── tanks (late-game armor escalation) ──
   if (kills > 500) {
     tankTimer -= dt;
-    if (tankTimer <= 0 && tanks.length < 2) { spawnTank(); tankTimer = rand(28, 45); }
+    if (tankTimer <= 0 && tanks.length < 2) { spawnTank(); tankTimer = rand(20, 32); }
   }
   for (const tk of tanks) {
     if (tk.dead) continue;
@@ -2258,14 +2320,14 @@ function update(dt) {
     if (Math.abs(dx) > 460) { tk.x += Math.sign(dx)*tk.sp*dt; tk.facing = Math.sign(dx) || 1; }
     tk.x = clamp(tk.x, 80, WATER_X - 120);
     // turret tracks you, slowly
-    const want = Math.atan2(P.y - (tk.y-30), P.x - tk.x);
+    const want = Math.atan2(P.y - (tk.y-30*TANK_SCALE), P.x - tk.x);
     let da = want - tk.turA;
     while (da > Math.PI) da -= Math.PI*2; while (da < -Math.PI) da += Math.PI*2;
     tk.turA += clamp(da, -1.6*dt, 1.6*dt);
     if (tk.fireCd <= 0 && Math.abs(tk.x-P.x) < VW*0.75) {
       tk.fireCd = rand(3.2, 4.6); tk.muzzle = 0.08;
-      shells.push({ x: tk.x + Math.cos(tk.turA)*44, y: tk.y - 30 + Math.sin(tk.turA)*44,
-        vx: Math.cos(tk.turA)*950, vy: Math.sin(tk.turA)*950, life: 2.6 });
+      shells.push({ x: tk.x + Math.cos(tk.turA)*44*TANK_SCALE, y: tk.y - 30*TANK_SCALE + Math.sin(tk.turA)*44*TANK_SCALE,
+        vx: Math.cos(tk.turA)*1200, vy: Math.sin(tk.turA)*1200, life: 2.2 });
       noiseBurst(0.3, 500, 0.2); thump(60, 0.3, 0.25); shake(4);
     }
   }
@@ -2281,12 +2343,23 @@ function update(dt) {
     if (sh.life <= 0) boom = true;
     // cellFrac 0: tank fire knocks YOU around but never wrecks buildings or kills civilians —
     // the city's destruction stays entirely Homelander's work
-    if (boom) { explode(sh.x, Math.min(sh.y, GROUND_Y-4), 78, 0, true); sh.life = 0; }
+    if (boom) {
+      const by = Math.min(sh.y, GROUND_Y-4);
+      explode(sh.x, by, 78, 0, true);
+      // a shell should hit noticeably harder than a generic blast — explode()'s own push is the
+      // same flat force every explosion gets, so stack a real punch on top of it here
+      if (dist2(P.x,P.y,sh.x,by) < 130*130) {
+        const d = Math.hypot(P.x-sh.x, P.y-by) || 1;
+        P.vx += (P.x-sh.x)/d*900; P.vy += (P.y-by)/d*900 - 140;
+        P.knockT = Math.max(P.knockT, 0.35);
+      }
+      sh.life = 0;
+    }
   }
   shells = shells.filter(s => s.life > 0);
 
   // ── sharks: hunt the player the moment he's in the water; blood just draws more of them in ──
-  if (sharks.length < 3 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
+  if (sharks.length < 5 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
   for (const s of sharks) {
     if (s.dead) continue;
     s.t += dt; s.feedT -= dt; s.biteCd -= dt;
@@ -2356,7 +2429,7 @@ function update(dt) {
     eb.x += eb.vx*dt; eb.y += eb.vy*dt; eb.life -= dt;
     if (inWater(eb.x, eb.y) && Math.random() < dt*40) bubbleAt(eb.x, eb.y);   // a visible trail underwater — the bolt used to just seem to vanish at the surface
     if (dist2(eb.x,eb.y,P.x,P.y) < 32*32) {
-      eb.life = 0; P.stunT = 2; boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
+      eb.life = 0; P.stunT = 1.5; boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
       for (let i=0;i<10;i++) sparks.push({x:eb.x,y:eb.y,vx:rand(-160,160),vy:rand(-160,160),life:rand(0.2,0.4),c:'#fff35a'});
     // GROUND_Y is also the water surface — a bolt crossing it out in the water zone should keep
     // going (so she can still tag you underwater) instead of fizzling the instant it touches water
@@ -2426,13 +2499,7 @@ function update(dt) {
       for (const gr of grunts) if (!gr.dead && dist2(g.x,g.y,gr.x,gr.y-16) < 18*18) { gr.dead=true; gibBurst(gr.x,gr.y-16,1); addKill(); }
     }
     const s = surfaceBelow(g.x, g.y - 20);
-    if (g.y > s - g.r) {
-      // heavy chunks (vehicle wreckage, building rubble) mark the ground the first time they land
-      // hard — buildings already leave a persistent rubble pile of their own, but wrecked tanks,
-      // trains and helis previously vanished without a trace once their debris chunks faded out
-      if (g.heavy && !g.baked && Math.abs(g.vy) > 80) { g.baked = true; bakeScorch(g.x, s, rand(10,18)); }
-      g.y = s - g.r; g.vy *= -0.3; g.vx *= 0.6;
-    }
+    if (g.y > s - g.r) { g.y = s - g.r; g.vy *= -0.3; g.vx *= 0.6; }
   }
   debris = debris.filter(g => g.life > 0);
   if (debris.length > 300) debris.splice(0, debris.length-300);
@@ -2454,7 +2521,7 @@ function update(dt) {
 
   // ── water blood clouds + bubbles ──
   for (const w of waterBloods) {
-    w.x += w.vx*dt; w.y += w.vy*dt; w.r += w.vr*dt; w.life -= dt;
+    w.x += w.vx*dt; w.y += w.vy*dt; w.r = Math.min(w.r + w.vr*dt, 70); w.life -= dt;
     w.y = clamp(w.y, GROUND_Y+6, WATER_FLOOR-10);
   }
   waterBloods = waterBloods.filter(w => w.life > 0);
@@ -2533,6 +2600,9 @@ function drawCity() {
   drawLayer(farLayer, 0.25, 'rgba(46,26,58,0.9)');
   drawLayer(midLayer, 0.55, 'rgba(30,18,44,0.95)');
   const shades = ['#1b1626','#20182c','#171322'];
+  // archetype palettes give each variant its own color family instead of just the neutral default
+  const archShades = { glass: ['#1c2e3a','#223648','#182732'], brick: ['#2e1c18','#3a2420','#28160f'],
+    construction: ['#242024','#2a2428','#1e1a1e'] };
   for (const b of fgBuildings) {
     const x = b.x - camX, y = b.roofY - camY;
     if (x + b.w < -60 || x > VW+60) continue;
@@ -2567,14 +2637,14 @@ function drawCity() {
       const remH = b.collapseFromH * (1-p);
       if (remH > 2) {
         const jitter = Math.sin(gameT*45 + b.rubbleSeed*9) * p * 8;
-        cx.fillStyle = b.ship ? '#323a46' : shades[b.shade];
+        cx.fillStyle = b.ship ? '#323a46' : (archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade]);
         // a ship piece slides straight down under the waterline rather than crumbling into a pile
         cx.fillRect(x + jitter, GROUND_Y - camY - remH, b.w, remH);
       }
       continue;
     }
     // facade
-    cx.fillStyle = b.ship ? '#323a46' : shades[b.shade];
+    cx.fillStyle = b.ship ? '#323a46' : (archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade]);
     cx.fillRect(x, y, b.w, b.h);
     // destroyed cells: exposed interior with floor slabs (not blank void)
     for (let cj=0; cj<b.rows; cj++) {
@@ -2679,6 +2749,29 @@ function drawCity() {
     if (b.ant) { cx.strokeStyle='#0c0a14'; cx.lineWidth=3; cx.beginPath(); cx.moveTo(x+b.w*0.3, y); cx.lineTo(x+b.w*0.3, y-46); cx.stroke();
       cx.fillStyle='rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2)))+')'; cx.beginPath(); cx.arc(x+b.w*0.3, y-48, 3.5, 0, 7); cx.fill(); }
     if (b.ac >= 0) { cx.fillStyle='#2a2438'; cx.fillRect(x+b.ac, y-14, 30, 14); }
+    if (b.watertower) {
+      const wtx = x + b.w*0.72;
+      cx.strokeStyle = '#1a1620'; cx.lineWidth = 2.5;
+      cx.beginPath(); cx.moveTo(wtx-14, y); cx.lineTo(wtx-10, y-26); cx.moveTo(wtx+14, y); cx.lineTo(wtx+10, y-26); cx.stroke();
+      cx.fillStyle = '#3a3142';
+      cx.beginPath(); cx.ellipse(wtx, y-34, 17, 9, 0, 0, 7); cx.fill();
+      cx.fillRect(wtx-17, y-42, 34, 17);
+      cx.beginPath(); cx.ellipse(wtx, y-42, 17, 8, 0, 0, 7); cx.fill();
+    }
+    if (b.billboard) {
+      const bbx = x + b.w*0.35, bby = y - 44;
+      cx.strokeStyle = '#161320'; cx.lineWidth = 3;
+      cx.beginPath(); cx.moveTo(bbx-24, y); cx.lineTo(bbx-20, bby+16); cx.moveTo(bbx+24, y); cx.lineTo(bbx+20, bby+16); cx.stroke();
+      cx.fillStyle = '#101018'; cx.fillRect(bbx-38, bby, 76, 40);
+      if (b.billboard.lit) {
+        cx.fillStyle = 'rgba(255,220,120,0.9)'; cx.fillRect(bbx-34, bby+4, 68, 32);
+        cx.fillStyle = 'rgba(255,60,90,0.85)'; cx.fillRect(bbx-30, bby+8, 26, 10);
+        cx.fillStyle = 'rgba(60,180,255,0.85)'; cx.fillRect(bbx+2, bby+22, 30, 10);
+      } else {
+        cx.strokeStyle = 'rgba(255,255,255,0.15)'; cx.lineWidth = 1;
+        cx.beginPath(); cx.moveTo(bbx-38,bby); cx.lineTo(bbx+38,bby+40); cx.moveTo(bbx+38,bby); cx.lineTo(bbx-38,bby+40); cx.stroke();
+      }
+    }
     if (b.burning) {
       const fl = 0.6 + 0.4*Math.abs(Math.sin(gameT*9 + b.rubbleSeed*30));
       const fx = x + b.w*0.5;
@@ -2756,7 +2849,10 @@ function drawCity() {
     for (const w of waterBloods) {
       const x = w.x - camX, y = w.y - camY;
       if (x < -w.r || x > VW + w.r) continue;
-      cx.globalAlpha = clamp(w.life / w.maxLife, 0, 1) * 0.42;
+      // stays fully bloomed for the first half of its life instead of fading from the instant it
+      // appears — it keeps spreading and darkening before it ever starts to go
+      const wp = clamp(w.life / w.maxLife, 0, 1);
+      cx.globalAlpha = (wp > 0.5 ? 1 : wp/0.5) * 0.42;
       cx.fillStyle = '#8e1414';
       cx.beginPath(); cx.arc(x, y, w.r, 0, 7); cx.fill();
     }
@@ -2967,28 +3063,6 @@ function drawDeep(dp) {
   cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, barY, w, 7);
   cx.fillStyle = '#2fbf9a'; cx.fillRect(x-w/2, barY, w*hpFrac, 7);
 }
-function drawTentacle(t) {
-  const x = t.x - camX;
-  if (x < -60 || x > VW+60) return;
-  const fy = GROUND_Y - camY;
-  if (t.phase === 'warn' || t.h <= 0) return;   // the warn phase is just the ripple rings
-  cx.strokeStyle = '#123b33'; cx.lineWidth = 13; cx.lineCap = 'round';
-  const sway = Math.sin(gameT*6 + t.x*0.01) * 8;
-  cx.beginPath();
-  cx.moveTo(x, fy + 8);
-  cx.quadraticCurveTo(x + sway, fy - t.h*0.55, x + sway*0.4, fy - t.h);
-  cx.stroke();
-  cx.strokeStyle = '#1d5a4c'; cx.lineWidth = 7;
-  cx.beginPath();
-  cx.moveTo(x, fy + 8);
-  cx.quadraticCurveTo(x + sway, fy - t.h*0.55, x + sway*0.4, fy - t.h);
-  cx.stroke();
-  cx.fillStyle = '#9adbc4';   // suckers
-  for (let i=1;i<=4;i++) {
-    const ty = fy - t.h*i/5;
-    cx.beginPath(); cx.arc(x + sway*(i/5)*0.8 - 3, ty, 1.8, 0, 7); cx.fill();
-  }
-}
 function drawSailShip() {
   const sx = sailShip.x - camX;
   if (sx > VW + 1800 || sx < -1800) return;
@@ -3059,15 +3133,14 @@ function drawTrain(t) {
     cx.strokeStyle = '#0d0b12'; cx.lineWidth = 2;                    // coupling link to the car behind
     cx.beginPath(); cx.moveTo(-52, -6); cx.lineTo(-60, -6); cx.stroke();
     if (i === 0) { cx.fillStyle = 'rgba(255,240,190,0.9)'; cx.fillRect(50, -20, 4, 7); }   // headlight
-    if (c.flash > 0) { cx.fillStyle = 'rgba(255,40,30,'+(clamp(c.flash/0.15,0,1)*0.55)+')'; cx.fillRect(-52, -30, 104, 26); }
     cx.restore();
     cx.globalAlpha = 1;
   }
 }
 function drawTank(tk) {
   const x = tk.x - camX, y = tk.y - camY;
-  if (x < -90 || x > VW+90) return;
-  cx.save(); cx.translate(x, y);
+  if (x < -90*TANK_SCALE || x > VW+90*TANK_SCALE) return;
+  cx.save(); cx.translate(x, y); cx.scale(TANK_SCALE, TANK_SCALE);
   // tracks
   cx.fillStyle = '#1a1f1c';
   cx.beginPath(); cx.moveTo(-40, -4); cx.lineTo(40, -4); cx.lineTo(32, 6); cx.lineTo(-32, 6); cx.closePath(); cx.fill();
@@ -3089,23 +3162,24 @@ function drawShark(s) {
   const x = s.x - camX, y = s.y - camY;
   if (x < -60 || x > VW+60) return;
   const fy = GROUND_Y - camY;
+  const sk = SHARK_SCALE;
   // body gliding under, brighter belly highlight for contrast against the dark water
   cx.fillStyle = 'rgba(120,140,152,0.85)';
-  cx.beginPath(); cx.ellipse(x, y, 24, 8, 0, 0, 7); cx.fill();
+  cx.beginPath(); cx.ellipse(x, y, 24*sk, 8*sk, 0, 0, 7); cx.fill();
   cx.fillStyle = 'rgba(210,222,228,0.55)';
-  cx.beginPath(); cx.ellipse(x, y+3, 18, 4, 0, 0, 7); cx.fill();
+  cx.beginPath(); cx.ellipse(x, y+3, 18*sk, 4*sk, 0, 0, 7); cx.fill();
   cx.fillStyle = 'rgba(120,140,152,0.9)';
-  cx.beginPath(); cx.moveTo(x - s.facing*22, y); cx.lineTo(x - s.facing*36, y-6); cx.lineTo(x - s.facing*33, y+4); cx.closePath(); cx.fill();
+  cx.beginPath(); cx.moveTo(x - s.facing*22*sk, y); cx.lineTo(x - s.facing*36*sk, y-6*sk); cx.lineTo(x - s.facing*33*sk, y+4*sk); cx.closePath(); cx.fill();
   cx.strokeStyle = 'rgba(230,240,245,0.4)'; cx.lineWidth = 1;
-  cx.beginPath(); cx.ellipse(x, y, 24, 8, 0, 0, 7); cx.stroke();
+  cx.beginPath(); cx.ellipse(x, y, 24*sk, 8*sk, 0, 0, 7); cx.stroke();
   // the dorsal fin only breaks the surface when he's actually up near it — not while diving on you
-  if (y - fy < 45) {
+  if (y - fy < 45*sk) {
     cx.fillStyle = '#6a7d89';
-    cx.beginPath(); cx.moveTo(x - 9*s.facing, fy+1);
-    cx.quadraticCurveTo(x, fy - 15, x + 7*s.facing, fy+1);
+    cx.beginPath(); cx.moveTo(x - 9*sk*s.facing, fy+1);
+    cx.quadraticCurveTo(x, fy - 15*sk, x + 7*sk*s.facing, fy+1);
     cx.closePath(); cx.fill();
     cx.strokeStyle = 'rgba(200,235,250,0.4)'; cx.lineWidth = 1.2;
-    cx.beginPath(); cx.moveTo(x - s.facing*10, fy+1); cx.lineTo(x - s.facing*26, fy+1); cx.stroke();
+    cx.beginPath(); cx.moveTo(x - s.facing*10*sk, fy+1); cx.lineTo(x - s.facing*26*sk, fy+1); cx.stroke();
   }
 }
 function drawJet(j) {
@@ -3209,6 +3283,26 @@ function drawCiv(c) {
   cx.fillStyle = c.skin; cx.beginPath(); cx.arc(0, -31, 5, 0, 7); cx.fill();
   if (c.w) { cx.fillStyle = '#2a2430'; cx.beginPath(); cx.arc(0, -33, 5, Math.PI, 0); cx.fill(); }
   cx.restore();
+}
+function drawStreetProp(p) {
+  const x = p.x - camX, gy = GROUND_Y - camY;
+  if (x < -30 || x > VW+30) return;
+  if (p.type === 'light') {
+    cx.strokeStyle = '#1c1826'; cx.lineWidth = 3.5;
+    cx.beginPath(); cx.moveTo(x, gy); cx.lineTo(x, gy-118); cx.stroke();
+    cx.beginPath(); cx.moveTo(x, gy-118); cx.quadraticCurveTo(x+16, gy-122, x+22, gy-112); cx.stroke();
+    cx.fillStyle = 'rgba(255,210,120,0.85)';
+    cx.beginPath(); cx.arc(x+23, gy-110, 4, 0, 7); cx.fill();
+  } else if (p.type === 'hydrant') {
+    cx.fillStyle = p.geyserT > 0 ? '#7a2318' : '#b8341f';
+    cx.fillRect(x-5, gy-20, 10, 20);
+    cx.beginPath(); cx.arc(x, gy-20, 6, Math.PI, 0); cx.fill();
+    cx.fillRect(x-8, gy-4, 16, 4);
+    if (p.geyserT > 0) {
+      cx.strokeStyle = 'rgba(220,240,250,0.5)'; cx.lineWidth = 3;
+      cx.beginPath(); cx.moveTo(x, gy-20); cx.lineTo(x+rand(-3,3), gy-90); cx.stroke();
+    }
+  }
 }
 function drawCar(car) {
   const x = car.x - camX, y = car.y - camY;
@@ -3492,7 +3586,12 @@ function drawFx() {
     cx.save(); cx.translate(g.x - camX, g.y - camY); cx.rotate(g.rot);
     cx.globalAlpha = clamp(g.life, 0, 1);
     cx.fillStyle = g.c;
-    if (g.shapeChunk) {
+    if (g.shard) {
+      // thin glinting glass sliver, distinct from the blunt chunk/rect shapes everything else uses
+      cx.beginPath();
+      cx.moveTo(0, -g.r*1.3); cx.lineTo(g.r*0.35, 0); cx.lineTo(0, g.r*1.1); cx.lineTo(-g.r*0.35, 0);
+      cx.closePath(); cx.fill();
+    } else if (g.shapeChunk) {
       cx.beginPath();
       cx.moveTo(-g.r, -g.r*0.5); cx.lineTo(g.r*0.6, -g.r*0.8); cx.lineTo(g.r, g.r*0.4); cx.lineTo(-g.r*0.5, g.r*0.7);
       cx.closePath(); cx.fill();
@@ -3634,8 +3733,8 @@ function draw() {
   drawScorchFx();
   if (sailShip) drawSailShip();
   for (const t of trains) drawTrain(t);
-  for (const t of tentacles) drawTentacle(t);
   for (const s of sharks) if (!s.dead) drawShark(s);
+  for (const p of streetProps) if (!p.dead) drawStreetProp(p);
   for (const car of cars) if (car.dir < 0) drawCar(car);
   for (const c of civs) drawCiv(c);
   for (const g of grunts) drawGrunt(g);
