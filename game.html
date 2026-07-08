@@ -1196,6 +1196,16 @@ function update(dt) {
         }
       }
     }
+    // same story as the train: a jet checked only against the (possibly already-clipped) beam end
+    // could sit closer than whatever the beam stopped on and still never register a hit
+    let hitJet = null;
+    for (const j of jets) {
+      if (j.dead) continue;
+      const t = clamp((j.x-ex)*ux + (j.y-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - j.x, ey+uy*t - j.y) < 40*JET_SCALE) {
+        stopD = t; hitJet = j; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null;
+      }
+    }
     beamEndX = ex + ux*stopD; beamEndY = ey + uy*stopD;
     const DPS = 315;
     if (hitB && hitI >= 0) {
@@ -1218,6 +1228,11 @@ function update(dt) {
       c.hp -= 450*dt;
       if (Math.random()<0.6) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
       if (c.hp <= 0) trainCarDeath(hitTrain.tr, hitTrain.i, hitTrain.cxw);
+    } else if (hitJet) {
+      // same durability as a helicopter — the beam burns it down rather than instantly detonating it
+      hitJet.hp -= 450*dt;
+      if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-8,8), y:beamEndY+rand(-8,8), vx:rand(-160,160), vy:rand(-120,40), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
+      if (hitJet.hp <= 0) jetDeath(hitJet);
     }
     // fodder caught anywhere along the (possibly shortened) beam still melts
     for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, ex, ey, beamEndX, beamEndY) < 16) {
@@ -1229,12 +1244,6 @@ function update(dt) {
     for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, ex, ey, beamEndX, beamEndY) < 20) carBoom(car);
     for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
       r.gone = true; explode(r.x, r.y, 46, 0, true);
-    }
-    for (const j of jets) if (!j.dead && segDist(j.x, j.y, ex, ey, beamEndX, beamEndY) < 40*JET_SCALE) {
-      // same durability as a helicopter — the beam burns it down rather than instantly detonating it
-      j.hp -= 450*dt;
-      if (Math.random()<0.7) sparks.push({ x:j.x+rand(-30,30), y:j.y+rand(-8,8), vx:rand(-160,160), vy:rand(-120,40), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
-      if (j.hp <= 0) jetDeath(j);
     }
     for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
       f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
