@@ -60,6 +60,7 @@ const rand = (a,b) => a + Math.random()*(b-a);
 const randi = (a,b) => Math.floor(rand(a,b+1));
 const clamp = (v,a,b) => v<a?a:v>b?b:v;
 const dist2 = (ax,ay,bx,by) => { const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
+const angDiff = (a,b) => { let d = a-b; while (d > Math.PI) d -= Math.PI*2; while (d < -Math.PI) d += Math.PI*2; return d; };
 function segDist(px,py,ax,ay,bx,by) {
   const abx=bx-ax, aby=by-ay;
   const t = clamp(((px-ax)*abx + (py-ay)*aby) / (abx*abx + aby*aby || 1), 0, 1);
@@ -396,7 +397,7 @@ const P = {
   dashT: 0, dashCd: 0, dashDir: {x:1,y:0},
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
   grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
-  underwaterT: 0, wasUnder: false, carried: false, slamStartY: 0,
+  underwaterT: 0, wasUnder: false, carried: false, slamStartY: 0, dashHitSet: new Set(),
 };
 const inWater = (x, y) => x > WATER_X && y > GROUND_Y;
 // world-space street lamp positions (matches the visual spacing in drawCity) — used as light-ball spawn points
@@ -452,6 +453,10 @@ function startDash(dir) {
   if (P.vertDash) P.slamStartY = P.y;   // remembered so the landing can scale its punch with how far he actually fell
   P.dashT = P.vertDash ? 3 : (dir === 'up' ? 0.38 : 0.30);
   P.bigLaunch = false;   // a fast 3rd tap of Up (see keydown handler) upgrades this into the big launch
+  // a dash lasts several frames, and anything with real HP (as opposed to fodder that just dies
+  // outright) could still be inside the hit radius on the next frame if it wasn't shoved clear in
+  // time — without this, one dash could quietly land its damage 3-5x on a boss. one hit per swing.
+  P.dashHitSet.clear();
   P.dashCd = 0.55;
   P.grounded = false; P.hopping = false;   // any dash-punch launches him back into flight
   shake(6); sfxDash();
@@ -505,6 +510,11 @@ function thunderclap() {
     dp.hp -= 90*deepDamageMult(dp);
     if (dp.hp<=0) deepDeath(dp);
   }
+  for (const l of lamplighters) if (!l.dead && dist2(l.x,l.y,P.x,P.y) < R*R) {
+    l.hp -= 90; const d=Math.hypot(l.x-P.x,l.y-P.y)||1;
+    l.vx += (l.x-P.x)/d*900; l.vy += (l.y-P.y)/d*900;
+    if (l.hp<=0) lamplighterDeath(l);
+  }
   for (const tk of tanks) if (!tk.dead && dist2(tk.x,tk.y-20*TANK_SCALE,P.x,P.y) < R*R) {
     tk.hp -= 150;
     if (tk.hp<=0) tankDeath(tk);
@@ -515,8 +525,9 @@ function thunderclap() {
     const cxw = trainCarX(t, i);
     if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
   }
-  // detonate incoming rockets mid-air
+  // detonate incoming rockets/fireballs mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
+  for (const fb of fireballs) if (dist2(fb.x,fb.y,P.x,P.y) < (R*1.2)*(R*1.2)) fb.life = 0;
   damageCellsInRadius(P.x, P.y, 140, 0.7);
   panicNear(P.x, 800);
 }
@@ -528,13 +539,17 @@ let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
 let mirrorBeam = null;   // Maeve's braced shield reflects an active second beam segment — set fresh each frame it's live
 let deeps = [], fishes = [];
 let trains = [], tanks = [], shells = [], sharks = [];
-let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70);
+let atrainDebris = [];   // A-Train's thrown-rubble answer to a player who just stays airborne
+let lamplighters = [], fireballs = [];
+let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70), lamplighterTimer = rand(40,65);
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
 let trainTimer = rand(10,18), tankTimer = rand(18,28);
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
 const TRAIN_SCALE = 1.6;         // cars were reading too small against the buildings
 const CAR_SPACE = 118 * TRAIN_SCALE, CAR_HIT_R = 52 * TRAIN_SCALE, CAR_CENTER_OFF = 16 * TRAIN_SCALE;
 let boltLockout = 0;   // Starlight can't fire another electric bolt until this clears — prevents chain-stunning
+let fireballLockout = 0;   // Lamplighter's own version of the same guard — kept separate from boltLockout
+                            // so the two bosses can't accidentally gate each other's attacks if both are up
 let shipRespawnT = 0, sailShip = null;   // the docked-ship respawn cycle: sink → 20s → new one sails in from the right
 // the ship's three pieces sit flush against each other with no gap — if the ship locks back in
 // with the player standing somewhere inside it, the per-piece push-out logic can't cleanly eject
@@ -625,7 +640,7 @@ function spawnSupe() {
 function spawnStarlight() {
   const side = Math.random()<0.5 ? -1 : 1;
   supes.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
-    vx: 0, vy: 0, hp: 1000, maxHp: 1000, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
+    vx: 0, vy: 0, hp: 1400, maxHp: 1400, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
     smokeT: 0, flash: 0, boss: true, orbitDir: Math.random()<0.5?1:-1, atkCd: rand(0.6,1.0),
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0 });
 }
@@ -663,7 +678,7 @@ function spawnATrain() {
     hp: 500, maxHp: 500, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
     facing: 1, dead: false, atkCd: rand(1.2,2), chargeVx: 0, blurT: 0, fleeCd: 0,
     laserHitT: 0, hitFlag: false, fleeing: false, stumbleCd: rand(1,2), lastRubbleIdx: -2,
-    climbTarget: null, climbX: 0, climbY0: 0, climbY1: 0, climbT: 0, climbDur: 0 });
+    climbTarget: null, climbX: 0, climbY0: 0, climbY1: 0, climbT: 0, climbDur: 0, windTarget: 'charge' });
 }
 // support pylons hold the rail up every 600px, offset so world x ≡ 470 (mod 600) — matches
 // the pylon positions the elevated-rail renderer draws
@@ -678,6 +693,18 @@ function startRailClimb(a, targetMode) {
     a.climbT = 0; a.climbDur = Math.max(0.25, Math.abs(a.climbY1 - a.climbY0) / 900);
   } else {
     a.wanderX = px; a.stateT = rand(0.25, 0.5);
+  }
+}
+// Maeve can't run up a pole like A-Train — she gets there with a real leap instead (an arced
+// jump, not a straight elevator climb), same pylon-lock/detour-first logic otherwise
+function startMaeveRailJump(a, targetMode) {
+  const px = clamp(nearestPylonX(a.x), 40, CITY_W - 60);
+  if (Math.abs(a.x - px) < 90) {
+    a.state = 'railjump'; a.climbTarget = targetMode; a.climbX = px;
+    a.climbY0 = a.y; a.climbY1 = targetMode === 'rail' ? RAIL_Y - 4 : GROUND_Y - 4;
+    a.climbT = 0; a.climbDur = Math.max(0.35, Math.abs(a.climbY1 - a.climbY0) / 1100);
+  } else {
+    a.wanderX = px; a.stateT = rand(0.3, 0.6);
   }
 }
 function atrainDeath(a) {
@@ -695,10 +722,12 @@ function spawnMaeve() {
   const side = Math.random()<0.5 ? -1 : 1;
   const x = clamp(P.x + side*(VW*0.6+300), 100, WORLD_W-100);
   maeves.push({ x, y: GROUND_Y, mode: 'ground', buildingIdx: -1, wanderX: x,
-    hp: 1600, maxHp: 1600, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
+    hp: 2200, maxHp: 2200, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
     facing: 1, dead: false, atkCd: rand(1.5,2.4), jumpVx: 0, jumpVy: 0,
     braceCd: rand(3,5), braceTele: 0, fleeing: false, fleeT: 0,
-    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.5,3), laserHitT: 0, hitFlag: false });
+    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.5,3), laserHitT: 0, hitFlag: false,
+    dodgeCd: rand(1.5,2.5), dodgeVx: 0, dodgeVy: 0, climbTarget: null, climbX: 0,
+    climbY0: 0, climbY1: 0, climbT: 0, climbDur: 0 });
 }
 function maeveBraced(a) { return a.state === 'brace' && a.braceTele <= 0; }
 function maeveDeath(a) {
@@ -726,7 +755,7 @@ function spawnDeep() {
   deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
     hp: 1200, maxHp: 1200, state: 'lurk', stateT: rand(1,2), facing: -1, dead: false,
     atkCd: rand(1.6,2.6), jumpVx: 0, jumpVy: 0, chargeDir: 1, fleeing: false, fleeT: 0,
-    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.6,2.8) });
+    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.6,2.8), weaveOffset: 0 });
 }
 function deepDeath(dp) {
   if (dp.dead) return;
@@ -738,6 +767,27 @@ function deepDeath(dp) {
   splash(dp.x, 900);
   deepTimer = rand(150, 200);
   announceBossKill('THE DEEP', dp.x, dp.y-10);
+}
+// ─── Lamplighter: flying fire boss. Own array rather than folding into `supes` — his kit
+// (fireball, flame-trail dash, close-range dragon breath) doesn't share anything with the
+// hair/star-emblem branches drawSupe already has for Starlight, so keeping him separate keeps
+// both simpler. Movement borrows the same "orbit + laser-juke + committed dash" shape that
+// already reads well on Starlight, just retuned closer so the breath attack is reachable.
+function spawnLamplighter() {
+  const side = Math.random()<0.5 ? -1 : 1;
+  lamplighters.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
+    vx: 0, vy: 0, hp: 950, maxHp: 950, dead: false, orbitDir: Math.random()<0.5?1:-1,
+    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.6,2.4),
+    breathing: false, breatheT: 0, breatheCd: rand(3.5,5), breatheHitCd: 0, atkCd: rand(1,1.6),
+    smokeT: 0, flash: 0, launchedT: 0, facing: 1 });
+}
+function lamplighterDeath(l) {
+  if (l.dead) return;
+  l.dead = true;
+  gibBurst(l.x, l.y, 1.6, true);
+  addKill(); addDamage(2.4e6);
+  lamplighterTimer = rand(140, 190);
+  announceBossKill('LAMPLIGHTER', l.x, l.y);
 }
 // ─── Elevated train: multi-car passenger trains crossing the city on the rail line ───
 function spawnTrain() {
@@ -826,6 +876,7 @@ const LASER_CELL_RATE = 16.5 * LASER_DMG_MULT;   // fill-per-second on a cell th
 const JET_SCALE = 2.3;
 const SHARK_SCALE = 1.3;   // a bit bigger — easier to actually make out against the dark water
 const TANK_SCALE = 1.7;    // was barely readable next to everything else at street scale
+const DEEP_SCALE = 1.45;   // his submerged fin-and-shadow silhouette (his most common state) read too small
 function destroyCell(b, i, wx, wy, quiet) {
   if (b.cells[i] >= 1) return;
   b.cells[i] = 1; b.destroyed++; b.dirty = true;
@@ -1080,6 +1131,7 @@ function update(dt) {
   P.clapCd = Math.max(0, P.clapCd - dt);
   P.stunT = Math.max(0, P.stunT - dt);
   boltLockout = Math.max(0, boltLockout - dt);
+  fireballLockout = Math.max(0, fireballLockout - dt);
   P.hurtFlash = Math.max(0, P.hurtFlash - dt*3);
   if (streakT > 0) { streakT -= dt; if (streakT <= 0) streak = 0; }
   document.getElementById('streak').textContent = streak >= 2 ? ('⚔ STREAK x' + streak) : '';
@@ -1113,6 +1165,10 @@ function update(dt) {
       else if (p.type === 'hydrant' && p.geyserT <= 0 && dist2(P.x,P.y,p.x,GROUND_Y-10) < 50*50) hydrantBoom(p);
     }
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
+      // non-boss supes die outright either way, so the once-per-swing guard only actually matters
+      // for a boss — but checking it either way costs nothing and keeps this branch uniform
+      if (s.boss && P.dashHitSet.has(s)) continue;
+      P.dashHitSet.add(s);
       // checked before this dash's own launch below — rewards catching a target already airborne
       // from an earlier hit, not just this one
       s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*(isJuggled(s) ? JUGGLE_DMG_MULT : 1) : 0;
@@ -1124,12 +1180,16 @@ function update(dt) {
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     }
     for (const h of helis) if (!h.dead && dist2(P.x,P.y,h.x,h.y) < 105*105) heliDeath(h);
-    for (const a of atrains) if (!a.dead && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
+    // a dash lasts several frames — without a once-per-swing guard, a boss that isn't shoved clear
+    // of the hit radius immediately could take this flat damage 3-5x off a single punch instead of once
+    for (const a of atrains) if (!a.dead && !P.dashHitSet.has(a) && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
+      P.dashHitSet.add(a);
       a.hp -= 260*DASH_DMG_MULT;
       rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
       if (a.hp<=0) atrainDeath(a);
     }
-    for (const a of maeves) if (!a.dead && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
+    for (const a of maeves) if (!a.dead && !P.dashHitSet.has(a) && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
+      P.dashHitSet.add(a);
       if (maeveBraced(a)) {
         // bounces right off — knocks Homelander back instead of connecting
         const kd = Math.hypot(P.x-a.x,P.y-a.y)||1;
@@ -1142,13 +1202,23 @@ function update(dt) {
         if (a.hp<=0) maeveDeath(a);
       }
     }
-    for (const dp of deeps) if (!dp.dead && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
+    for (const dp of deeps) if (!dp.dead && !P.dashHitSet.has(dp) && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
+      P.dashHitSet.add(dp);
       dp.hp -= 260*DASH_DMG_MULT*deepDamageMult(dp);
       rings.push({x:dp.x,y:dp.y-10,r:10,life:0.4,w:3});
       if (dp.hp<=0) deepDeath(dp);
     }
+    for (const l of lamplighters) if (!l.dead && !P.dashHitSet.has(l) && dist2(P.x,P.y,l.x,l.y) < 72*72) {
+      P.dashHitSet.add(l);
+      l.hp -= 380*DASH_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1);
+      l.vx += P.dashDir.x*400; l.vy += P.dashDir.y*400;
+      if (P.dashDir.y < -0.3) l.launchedT = 0.9;
+      rings.push({x:l.x,y:l.y,r:10,life:0.4,w:3});
+      if (l.hp<=0) lamplighterDeath(l);
+    }
     for (const ct of containers) if (!ct.dead && dist2(P.x,P.y,ct.x+ct.w/2,ct.y+ct.h/2) < 82*82) containerBoom(ct);
-    for (const tk of tanks) if (!tk.dead && dist2(P.x,P.y,tk.x,tk.y-20*TANK_SCALE) < (78*TANK_SCALE)*(78*TANK_SCALE)) {
+    for (const tk of tanks) if (!tk.dead && !P.dashHitSet.has(tk) && dist2(P.x,P.y,tk.x,tk.y-20*TANK_SCALE) < (78*TANK_SCALE)*(78*TANK_SCALE)) {
+      P.dashHitSet.add(tk);
       tk.hp -= 400*DASH_DMG_MULT;
       rings.push({x:tk.x,y:tk.y-20*TANK_SCALE,r:10,life:0.4,w:3});
       if (tk.hp <= 0) tankDeath(tk);
@@ -1427,8 +1497,16 @@ function update(dt) {
       if (dp.dead) continue;
       const dy = dp.y-12;
       const t = clamp((dp.x-ex)*ux + (dy-ey)*uy, 0, tlen);
-      if (t < stopD && Math.hypot(ex+ux*t - dp.x, ey+uy*t - dy) < 24) {
+      if (t < stopD && Math.hypot(ex+ux*t - dp.x, ey+uy*t - dy) < 24*DEEP_SCALE) {
         stopD = t; hitDeep = dp; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null; hitContainer = null; hitTank = null; hitATrain = null; hitMaeve = null;
+      }
+    }
+    let hitLamp = null;
+    for (const l of lamplighters) {
+      if (l.dead) continue;
+      const t = clamp((l.x-ex)*ux + (l.y-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - l.x, ey+uy*t - l.y) < 22) {
+        stopD = t; hitLamp = l; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null; hitContainer = null; hitTank = null; hitATrain = null; hitMaeve = null; hitDeep = null;
       }
     }
     beamEndX = ex + ux*stopD; beamEndY = ey + uy*stopD;
@@ -1532,6 +1610,11 @@ function update(dt) {
       if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
       else if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
       if (dp.hp <= 0) deepDeath(dp);
+    } else if (hitLamp) {
+      const l = hitLamp;
+      l.hp -= 380*dt*LASER_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1); l.smokeT = 0.1; l.flash = 0.1;
+      if (Math.random()<0.6) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.15,0.3),c:'#ff8a3a'});
+      if (l.hp <= 0) lamplighterDeath(l);
     }
     // fodder caught anywhere along the (possibly shortened) beam still melts
     for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, ex, ey, beamEndX, beamEndY) < 16) {
@@ -1547,6 +1630,15 @@ function update(dt) {
     }
     for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
       r.gone = true; explode(r.x, r.y, 46, 0, true);
+    }
+    for (const rb of atrainDebris) if (!rb.gone && segDist(rb.x, rb.y, ex, ey, beamEndX, beamEndY) < 16) {
+      rb.gone = true;
+      for (let i=0;i<7;i++) debris.push({ x: rb.x+rand(-8,8), y: rb.y+rand(-8,8), vx: rand(-100,100), vy: -rand(40,140), rot: rand(0,7), vr: rand(-6,6), r: rand(2.5,5), c: '#2e2638', life: rand(0.5,1) });
+      sfxCrack();
+    }
+    for (const fb of fireballs) if (fb.life > 0 && segDist(fb.x, fb.y, ex, ey, beamEndX, beamEndY) < 16) {
+      fb.life = 0;
+      for (let i=0;i<6;i++) sparks.push({x:fb.x,y:fb.y,vx:rand(-100,100),vy:rand(-100,100),life:rand(0.15,0.3),c:'#ff8a3a'});
     }
     for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
       f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
@@ -1597,6 +1689,10 @@ function update(dt) {
   if (kills > 50) {
     atrainTimer -= dt;
     if (atrainTimer <= 0 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
+  }
+  if (kills > 200) {
+    lamplighterTimer -= dt;
+    if (lamplighterTimer <= 0 && lamplighters.length === 0) { spawnLamplighter(); lamplighterTimer = rand(60, 90); }
   }
   if (kills > 250) {
     maeveTimer -= dt;
@@ -1897,8 +1993,19 @@ function update(dt) {
     } else if (a.state === 'wind') {
       a.stateT -= dt;
       if (a.stateT <= 0) {
-        a.chargeVx = (P.x > a.x ? 1 : -1) * 2000;
-        a.state = 'charge'; a.stateT = 0.35;
+        if (a.windTarget === 'throw') {
+          const tx = P.x + P.vx*0.3, ty = P.y + P.vy*0.3;   // lead the throw a little
+          const tdist = Math.max(120, Math.hypot(tx-a.x, ty-a.y));
+          const air = clamp(tdist/900, 0.55, 1.15);          // further throws arc higher and longer
+          atrainDebris.push({ x: a.x, y: a.y-20,
+            vx: (tx-a.x)/air, vy: -rand(520,620)*air, life: 2.2 });
+          for (let i=0;i<6;i++) debris.push({ x: a.x+rand(-10,10), y: GROUND_Y-4, vx: rand(-60,60), vy: -rand(40,120), rot: rand(0,7), vr: rand(-6,6), r: rand(2,5), c: '#2e2638', life: rand(0.4,0.8) });
+          sfxCrack();
+          a.state = 'skid'; a.stateT = rand(0.4,0.6);
+        } else {
+          a.chargeVx = (P.x > a.x ? 1 : -1) * 2000;
+          a.state = 'charge'; a.stateT = 0.35;
+        }
       }
     } else if (a.state === 'skid') {
       a.stateT -= dt;
@@ -1924,15 +2031,28 @@ function update(dt) {
     } else { // 'run'
       a.stateT -= dt;
       a.fleeCd -= dt;
-      // evasion: if you're dashing at him or lasering anywhere near him, dart hard away — long
-      // sprint, often clean off the edge of the screen and back, not just a sidestep. The old
-      // 280-unit firing radius meant he basically never reacted to the beam at any real range —
-      // the laser reaches most of the screen, so his "am I threatened" check needs to too
-      const threatened = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 320*320) ||
-                          (firing && dist2(P.x,P.y,a.x,a.y) < 950*950);
+      // evasion: reacts to the laser only when it's actually aimed near him (same beam-proximity
+      // projection Starlight's juke uses), not just "is the player somewhere nearby holding click"
+      // — a flat radius meant he was flinching on every frame the player fired at all, anywhere
+      // near him, which read as twitchy rather than reactive. fleeCd is also much longer now, so a
+      // dart-away commits to a real sprint instead of re-picking a new target every 0.3s.
+      let laserThreat = false;
+      if (firing && P.beamEndX !== undefined) {
+        const bex = P.x + P.facing*6, bey = P.y - 24;
+        const bux = P.beamEndX - bex, buy = P.beamEndY - bey;
+        const blen = Math.hypot(bux,buy) || 1;
+        const nux = bux/blen, nuy = buy/blen;
+        const toAx = a.x-bex, toAy = a.y-bey;
+        const proj = toAx*nux + toAy*nuy;
+        if (proj > 0 && proj < blen+50) {
+          const perpX = toAx - nux*proj, perpY = toAy - nuy*proj;
+          if (Math.hypot(perpX,perpY) < 110) laserThreat = true;
+        }
+      }
+      const threatened = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 320*320) || laserThreat;
       if (threatened && a.fleeCd <= 0) {
         a.wanderX = clamp(a.x + (a.x < P.x ? -1 : 1) * rand(700,1300), 60, WORLD_W-60);
-        a.stateT = rand(0.7,1.2); a.fleeCd = 0.3;
+        a.stateT = rand(0.7,1.2); a.fleeCd = 1.1;
       } else if (a.stateT <= 0) {
         // long, fast sweeps that carry him well past the edges of the screen and back
         a.wanderX = clamp(P.x + (Math.random()<0.5?-1:1)*rand(500,1300), 60, WORLD_W-60);
@@ -1945,7 +2065,13 @@ function update(dt) {
       // only charge when he's actually near the player's altitude — no more wasted charges
       // while you're safely flying well above the streets/rooftops
       if (a.atkCd <= 0 && d < 480 && Math.abs(P.y - a.y) < 170) {
-        a.state = 'wind'; a.stateT = 0.3; a.atkCd = rand(1.8,2.8);
+        a.state = 'wind'; a.stateT = 0.3; a.atkCd = rand(1.8,2.8); a.windTarget = 'charge';
+      } else if (a.atkCd <= 0 && d < 1300 && P.y < a.y - 170) {
+        // he never flies and his charge is horizontal-only, so a player who just sits above him
+        // used to get zero engagement — same telegraphed wind-up as the charge, but it resolves
+        // into ripping up a chunk of the street and hurling it in an arc instead, so staying
+        // airborne isn't a free pass anymore
+        a.state = 'wind'; a.stateT = 0.3; a.atkCd = rand(2.2,3.2); a.windTarget = 'throw';
       }
       // running at full speed through a building he himself just leveled trips him — a fair, earned
       // opening that punishes running a straight line through the wreckage you two have made together
@@ -2067,7 +2193,34 @@ function update(dt) {
       continue;   // under her own lunge velocity — skip the surface-tracking pull below
     }
 
-    if (a.state === 'crouch') {
+    if (a.state === 'dodge') {
+      // an actual evasive read instead of just tanking it or standing still — a jump biased toward
+      // the nearest building wall and off it, arcing up and away rather than a straight vertical hop
+      a.stateT -= dt;
+      a.x += a.dodgeVx*dt; a.y += a.dodgeVy*dt; a.dodgeVy += 1100*dt;
+      a.facing = a.dodgeVx >= 0 ? 1 : -1;
+      if (Math.random()<dt*30) sparks.push({x:a.x,y:a.y,vx:rand(-60,60),vy:rand(-40,40),life:rand(0.15,0.3),c:'#e0e8ff'});
+      if (a.y >= GROUND_Y - 4 || a.stateT <= 0) {
+        a.y = Math.min(a.y, GROUND_Y - 4);
+        a.state = 'run'; a.stateT = rand(0.5,0.9); a.wanderX = a.x;
+      }
+      a.x = clamp(a.x, 40, WATER_X + 260);
+      continue;   // under her own dodge velocity — skip the surface-tracking pull below
+    }
+
+    if (a.state === 'railjump') {
+      // locked to the pylon's x, arcing up (or down) to the rail deck — a leap, not a climb
+      a.climbT += dt;
+      const cp = clamp(a.climbT / a.climbDur, 0, 1);
+      a.x = a.climbX;
+      a.y = a.climbY0 + (a.climbY1 - a.climbY0) * cp - Math.sin(cp*Math.PI) * 50;
+      if (Math.random() < dt*20) sparks.push({ x: a.x+rand(-8,8), y: a.y, vx: rand(-40,40), vy: rand(10,40), life: rand(0.15,0.3), c: '#e0e8ff' });
+      if (cp >= 1) {
+        a.mode = a.climbTarget; a.buildingIdx = -1;
+        a.state = 'run'; a.stateT = rand(0.4,0.8);
+      }
+      a.x = clamp(a.x, 40, CITY_W - 60);
+    } else if (a.state === 'crouch') {
       a.stateT -= dt;
       if (a.stateT <= 0) {
         // lead the lunge toward where you're actually headed, not just where you are right now
@@ -2118,19 +2271,51 @@ function update(dt) {
       if (a.braceCd <= 0 && Math.abs(P.x-a.x) < 900) {
         a.state = 'brace'; a.stateT = 1.3; a.braceTele = 0.35; a.braceCd = rand(5.5, 7.5);
       }
+      // evasive dodge: a real threat read (laser actually aimed near her, same beam-proximity
+      // projection A-Train's evasion uses, or a dash closing in), checked after brace so the two
+      // reactions never both try to trigger off the same frame — dodge wins if both would fire
+      a.dodgeCd -= dt;
+      if (a.dodgeCd <= 0 && a.state === 'run') {
+        let laserThreat2 = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 340*340);
+        if (!laserThreat2 && firing && P.beamEndX !== undefined) {
+          const bex = P.x + P.facing*6, bey = P.y - 24;
+          const bux = P.beamEndX - bex, buy = P.beamEndY - bey;
+          const blen = Math.hypot(bux,buy) || 1;
+          const nux = bux/blen, nuy = buy/blen;
+          const toAx = a.x-bex, toAy = (a.y-16)-bey;
+          const proj = toAx*nux + toAy*nuy;
+          if (proj > 0 && proj < blen+50) {
+            const perpX = toAx - nux*proj, perpY = toAy - nuy*proj;
+            if (Math.hypot(perpX,perpY) < 110) laserThreat2 = true;
+          }
+        }
+        if (laserThreat2) {
+          const cands = fgBuildings.filter(b => !b.collapsed && !b.collapsing && Math.abs((b.x+b.w/2)-a.x) < 340);
+          let wallDir = Math.random()<0.5 ? -1 : 1;
+          if (cands.length) { const b = cands[randi(0,cands.length-1)]; wallDir = Math.sign((b.x+b.w/2) - a.x) || 1; }
+          a.dodgeVx = wallDir*rand(500,700); a.dodgeVy = -rand(680,820);
+          a.state = 'dodge'; a.stateT = 0.7; a.dodgeCd = rand(3, 4.5);
+        }
+      }
       a.roofCd -= dt;
       if (a.roofCd <= 0) {
         a.roofCd = rand(1.2, 2.4);
+        const railDist = Math.abs(P.y - RAIL_Y), railInPlay = a.x < CITY_W - 100;
         if (a.mode === 'ground') {
           const idx = findBuildingIndexAt(a.x);
-          if (idx >= 0) {
-            const roofDist = Math.abs(P.y - fgBuildings[idx].roofY), groundDist = Math.abs(P.y - GROUND_Y);
-            if (Math.random() < (roofDist < groundDist ? 0.85 : 0.3)) { a.mode = 'roof'; a.buildingIdx = idx; }
-          }
-        } else {
+          const roofDist = idx >= 0 ? Math.abs(P.y - fgBuildings[idx].roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
+          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.55) {
+            startMaeveRailJump(a, 'rail');
+          } else if (idx >= 0 && Math.random() < (roofDist < groundDist ? 0.85 : 0.3)) { a.mode = 'roof'; a.buildingIdx = idx; }
+        } else if (a.mode === 'roof') {
           const b = fgBuildings[a.buildingIdx];
           const roofDist = b ? Math.abs(P.y - b.roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
-          if (Math.random() < (groundDist < roofDist ? 0.6 : 0.2)) { a.mode = 'ground'; a.buildingIdx = -1; }
+          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.45) {
+            startMaeveRailJump(a, 'rail');
+          } else if (Math.random() < (groundDist < roofDist ? 0.6 : 0.2)) { a.mode = 'ground'; a.buildingIdx = -1; }
+        } else { // 'rail'
+          const groundDist = Math.abs(P.y - GROUND_Y);
+          if (!railInPlay || (railDist > groundDist && Math.random() < 0.55)) { startMaeveRailJump(a, 'ground'); }
         }
       }
     }
@@ -2149,9 +2334,13 @@ function update(dt) {
         if (!hopped) a.mode = 'ground';
       }
     }
-    const targetY = (a.mode === 'roof' && fgBuildings[a.buildingIdx]) ? fgBuildings[a.buildingIdx].roofY - 4 : GROUND_Y - 4;
-    a.y += clamp(targetY - a.y, -2600*dt, 2600*dt);
-    a.x = clamp(a.x, 40, WATER_X + 260);   // can't swim, but she'll wade into the shallows to stay a threat
+    if (a.state !== 'railjump') {   // railjump manages its own x/y locked to the pylon, above
+      const targetY = (a.mode === 'roof' && fgBuildings[a.buildingIdx]) ? fgBuildings[a.buildingIdx].roofY - 4
+                     : a.mode === 'rail' ? RAIL_Y - 4
+                     : GROUND_Y - 4;
+      a.y += clamp(targetY - a.y, -2600*dt, 2600*dt);
+      a.x = clamp(a.x, 40, a.mode === 'rail' ? CITY_W - 60 : WATER_X + 260);   // can't swim, but she'll wade into the shallows to stay a threat
+    }
   }
   maeves = maeves.filter(a => !a.dead);
 
@@ -2185,10 +2374,15 @@ function update(dt) {
         dp.weaveCd -= dt;
         if (dp.weaveCd <= 0) {
           dp.weaveCd = rand(1.6, 2.8);
-          dp.x = clamp(dp.x + (Math.random()<0.5?-1:1)*rand(120,240), WATER_X+60, WORLD_W-60);
+          // used to snap dp.x straight to a new spot — an instant teleport. now it just rerolls a
+          // target offset that the normal chase-step below eases into, same as Maeve's wanderX
+          dp.weaveOffset = (Math.random()<0.5?-1:1)*rand(120,240);
         }
+        chaseX += dp.weaveOffset;
       }
-      const step = Math.min(Math.abs(chaseX - dp.x), (beached ? 900 : 430)*dt);
+      // was 430/s, noticeably slower than every other boss — read as absent even once you were
+      // right in his water
+      const step = Math.min(Math.abs(chaseX - dp.x), (beached ? 900 : 680)*dt);
       dp.x += (chaseX >= dp.x ? 1 : -1) * step;
       const depthY = beached ? GROUND_Y - 4 : GROUND_Y + 55 + Math.sin(gameT*1.7 + dp.weavePhase)*35;
       dp.y += (depthY - dp.y) * Math.min(1, dt*4);
@@ -2304,6 +2498,107 @@ function update(dt) {
     dp.y = clamp(dp.y, 120, WATER_FLOOR - 40);
   }
   deeps = deeps.filter(d => !d.dead);
+
+  // ── Lamplighter (flying fire boss) ──
+  for (const l of lamplighters) {
+    if (l.dead) continue;
+    l.smokeT -= dt; l.flash -= dt;
+    if (l.launchedT > 0) l.launchedT -= dt;
+    const dx = P.x-l.x, dy = P.y-l.y, d = Math.hypot(dx,dy) || 1;
+
+    if (l.breathing) {
+      // close-range dragon-breath cone: holds roughly in place and channels toward the player,
+      // chip-damaging fodder caught in the cone and periodically shoving/stunning the player —
+      // throttled by breatheHitCd so continuous cone contact ticks at a fair rate instead of every
+      // single frame (the same "once per swing, not once per frame" lesson as the dash-hit fix)
+      l.breatheT -= dt; l.breatheHitCd -= dt;
+      l.facing = dx >= 0 ? 1 : -1;
+      const ang = Math.atan2(dy,dx);
+      if (Math.random() < dt*70) {
+        const spread = rand(-0.4,0.4), rr = rand(20,190);
+        embers.push({ x: l.x+Math.cos(ang+spread)*rr, y: l.y+Math.sin(ang+spread)*rr,
+          vx: Math.cos(ang+spread)*60, vy: Math.sin(ang+spread)*60-20, life: rand(0.2,0.4), r: rand(1.5,3.5) });
+      }
+      const halfAngle = 0.5, range = 220;
+      for (const g of grunts) if (!g.dead) {
+        const gdx=g.x-l.x, gdy=(g.y-16)-l.y, gd=Math.hypot(gdx,gdy);
+        if (gd<range && Math.abs(angDiff(Math.atan2(gdy,gdx),ang))<halfAngle) { g.dead=true; gibBurst(g.x,g.y-16,1); addKill(); }
+      }
+      for (const c of civs) if (!c.dead) {
+        const cdx=c.x-l.x, cdy=(c.y-14)-l.y, cd=Math.hypot(cdx,cdy);
+        if (cd<range && Math.abs(angDiff(Math.atan2(cdy,cdx),ang))<halfAngle) { c.dead=true; gibBurst(c.x,c.y-14,1); addKill(); }
+      }
+      for (const car of cars) if (!car.dead) {
+        const kdx=car.x-l.x, kdy=(car.y-10)-l.y, kd=Math.hypot(kdx,kdy);
+        if (kd<range && Math.abs(angDiff(Math.atan2(kdy,kdx),ang))<halfAngle) carBoom(car);
+      }
+      if (d < range && l.breatheHitCd <= 0 && Math.abs(angDiff(Math.atan2(dy,dx),ang)) < halfAngle) {
+        l.breatheHitCd = 0.35;
+        P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(8); sfxHit();
+        P.vx += (P.x-l.x)/d*500; P.vy += (P.y-l.y)/d*500 - 60;
+      }
+      if (l.breatheT <= 0 || d > 320) { l.breathing = false; l.breatheCd = rand(4,6); }
+      continue;
+    }
+
+    if (l.dashing) {
+      // same committed close-range shove Starlight's dash is, but leaves a trailing flame line
+      l.dashT -= dt;
+      l.x += l.dashVx*dt; l.y += l.dashVy*dt;
+      l.facing = l.dashVx >= 0 ? 1 : -1;
+      if (Math.random() < dt*90) embers.push({ x: l.x+rand(-6,6), y: l.y+rand(-6,6), vx: rand(-20,20), vy: rand(-40,-10), life: rand(0.3,0.55), r: rand(1.5,3) });
+      if (d < 50) {
+        const kd = d || 1;
+        P.knockT = Math.max(P.knockT, 0.4);
+        P.vx += (P.x-l.x)/kd*1950; P.vy += (P.y-l.y)/kd*1950;
+        P.hurtFlash = 1; shake(14); sfxHit(); thump(60,0.25,0.3);
+        l.dashing = false; l.dashCd = rand(2.4,3.4);
+      } else if (l.dashT <= 0) { l.dashing = false; l.dashCd = rand(2.4,3.4); }
+      l.x = clamp(l.x, 60, WORLD_W-60); l.y = clamp(l.y, 120, GROUND_Y-200);
+      continue;
+    }
+
+    // orbit-and-approach, same shape as Starlight but a closer preferred distance so the breath
+    // attack (close range) is actually reachable between dashes
+    const desired = 280;
+    const closeF = (d - desired)/400;
+    l.vx += (dx/d) * closeF * 700*dt; l.vy += (dy/d) * closeF * 700*dt;
+    l.vx += (-dy/d) * l.orbitDir * 260*dt; l.vy += (dx/d) * l.orbitDir * 260*dt;
+    l.vx -= l.vx*1.2*dt; l.vy -= l.vy*1.2*dt;
+    const spL = Math.hypot(l.vx,l.vy), mxL = 560;
+    if (spL > mxL) { l.vx *= mxL/spL; l.vy *= mxL/spL; }
+    if (firing && P.beamEndX !== undefined) {
+      const bex = P.x + P.facing*6, bey = P.y - 24;
+      const bux = P.beamEndX - bex, buy = P.beamEndY - bey;
+      const blen = Math.hypot(bux,buy) || 1;
+      const nux = bux/blen, nuy = buy/blen;
+      const toLx = l.x-bex, toLy = l.y-bey;
+      const proj = toLx*nux + toLy*nuy;
+      if (proj > 0 && proj < blen+50) {
+        const perpX = toLx - nux*proj, perpY = toLy - nuy*proj;
+        const perpDist = Math.hypot(perpX,perpY) || 1;
+        if (perpDist < 100) { l.vx += (perpX/perpDist)*900*dt; l.vy += (perpY/perpDist)*900*dt; }
+      }
+    }
+    l.x = clamp(l.x + l.vx*dt, 60, WORLD_W-60);
+    l.y = clamp(l.y + l.vy*dt, 120, GROUND_Y-200);
+    l.facing = l.vx >= 0 ? 1 : -1;
+    // ambient flame trail — reads as "on fire" even when he's just flying around, not only mid-dash
+    if (Math.random() < dt*18) smokes.push({ x: l.x+rand(-8,8), y: l.y+rand(-8,8), r: rand(4,8), vr: rand(10,18), vy: rand(-30,-10), life: rand(0.3,0.55), c: 'rgba(120,60,20,' });
+    if (Math.random() < dt*30) embers.push({ x: l.x+rand(-8,8), y: l.y+rand(-8,8), vx: rand(-15,15), vy: rand(-40,-10), life: rand(0.25,0.45), r: rand(1,2.2) });
+    l.dashCd -= dt;
+    if (l.dashCd <= 0 && d < 260) { l.dashing = true; l.dashT = 0.35; l.dashVx = (dx/d)*1500; l.dashVy = (dy/d)*1500; }
+    l.breatheCd -= dt;
+    if (l.breatheCd <= 0 && d < 220) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
+    l.atkCd -= dt;
+    if (l.atkCd <= 0 && fireballLockout <= 0) {
+      const a = Math.atan2(dy,dx);
+      fireballs.push({ x: l.x, y: l.y, vx: Math.cos(a)*980, vy: Math.sin(a)*980, life: 2.4 });
+      sfxDash();
+      l.atkCd = rand(1.4, 2);
+    }
+  }
+  lamplighters = lamplighters.filter(l => !l.dead);
 
   // ── The Deep's leaping fish ──
   for (const f of fishes) {
@@ -2464,6 +2759,29 @@ function update(dt) {
   }
   rockets = rockets.filter(r => !r.gone);
 
+  // ── A-Train's thrown rubble (his answer when the player just stays airborne) ──
+  for (const rb of atrainDebris) {
+    rb.vy += 1100*dt;
+    rb.x += rb.vx*dt; rb.y += rb.vy*dt; rb.life -= dt;
+    if (Math.random()<0.7) debris.push({ x: rb.x+rand(-3,3), y: rb.y+rand(-3,3), vx: rand(-15,15), vy: rand(-15,15), rot: rand(0,7), vr: rand(-6,6), r: rand(1.5,3), c: '#2e2638', life: rand(0.2,0.4) });
+    let boom = false;
+    if (dist2(rb.x,rb.y,P.x,P.y) < 34*34) {
+      boom = true;
+      P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(10); sfxHit(); thump(70,0.2,0.25);
+      const kd = Math.hypot(P.x-rb.x,P.y-rb.y) || 1;
+      P.vx += (P.x-rb.x)/kd*700; P.vy += (P.y-rb.y)/kd*700 - 120;
+    }
+    if (rb.y >= GROUND_Y - 4) boom = true;
+    if (cellIntactAt(rb.x, rb.y)) boom = true;
+    if (rb.life <= 0) boom = true;
+    if (boom) {
+      rb.gone = true;
+      for (let i=0;i<7;i++) debris.push({ x: rb.x+rand(-8,8), y: Math.min(rb.y,GROUND_Y-2), vx: rand(-100,100), vy: -rand(40,140), rot: rand(0,7), vr: rand(-6,6), r: rand(2.5,5), c: '#2e2638', life: rand(0.5,1) });
+      shake(4); sfxCrack();
+    }
+  }
+  atrainDebris = atrainDebris.filter(rb => !rb.gone && rb.life > 0);
+
   // ── bullets ──
   for (const b of bullets) {
     b.x += b.vx*dt; b.y += b.vy*dt; b.life -= dt;
@@ -2486,6 +2804,19 @@ function update(dt) {
     } else if (cellIntactAt(eb.x, eb.y) || (eb.y > GROUND_Y && (eb.x <= WATER_X || eb.y > WATER_FLOOR))) eb.life = 0;
   }
   electroBolts = electroBolts.filter(eb => eb.life > 0);
+
+  // ── Lamplighter's fireballs ──
+  for (const fb of fireballs) {
+    fb.x += fb.vx*dt; fb.y += fb.vy*dt; fb.life -= dt;
+    if (Math.random() < dt*40) embers.push({ x: fb.x, y: fb.y, vx: rand(-15,15), vy: rand(-15,15), life: rand(0.15,0.3), r: rand(1,2) });
+    if (dist2(fb.x,fb.y,P.x,P.y) < 30*30) {
+      fb.life = 0; P.stunT = Math.max(P.stunT, 0.5); fireballLockout = 1.2; P.hurtFlash = 1; shake(10); sfxHit(); thump(160, 0.25, 0.22);
+      const kd = Math.hypot(P.x-fb.x,P.y-fb.y) || 1;
+      P.vx += (P.x-fb.x)/kd*400; P.vy += (P.y-fb.y)/kd*400;
+      for (let i=0;i<8;i++) sparks.push({x:fb.x,y:fb.y,vx:rand(-140,140),vy:rand(-140,140),life:rand(0.2,0.4),c:'#ff8a3a'});
+    } else if (cellIntactAt(fb.x, fb.y) || (fb.y > GROUND_Y && (fb.x <= WATER_X || fb.y > WATER_FLOOR))) fb.life = 0;
+  }
+  fireballs = fireballs.filter(fb => fb.life > 0);
 
   // ── Starlight's light balls (spawned from windows/lamps, weak homing) ──
   for (const lb of lightBalls) {
@@ -3050,23 +3381,25 @@ function drawDeep(dp) {
   const fy = GROUND_Y - camY;
   if (submerged) {
     // always-on glow so he doesn't vanish against the water the way the other bosses never
-    // vanish against the street — this is his most common state, so it matters most here
+    // vanish against the street — this is his most common state, so it matters most here.
+    // scaled up (DEEP_SCALE) since this fin-and-shadow silhouette used to read noticeably
+    // smaller than every other boss's on-screen presence
     cx.fillStyle = 'rgba(47,191,154,0.32)';
-    cx.beginPath(); cx.arc(x, fy - 6, 28, 0, 7); cx.fill();
+    cx.beginPath(); cx.arc(x, fy - 6, 28*DEEP_SCALE, 0, 7); cx.fill();
     // only the fin breaks the surface; a dark shape glides beneath it
     cx.fillStyle = 'rgba(13,58,52,0.5)';
-    cx.beginPath(); cx.ellipse(x, y - 4, 26, 11, 0, 0, 7); cx.fill();
+    cx.beginPath(); cx.ellipse(x, y - 4, 26*DEEP_SCALE, 11*DEEP_SCALE, 0, 0, 7); cx.fill();
     cx.fillStyle = '#0d3a34';
-    cx.beginPath(); cx.moveTo(x - 11*dp.facing, fy + 1);
-    cx.quadraticCurveTo(x - 1*dp.facing, fy - 17, x + 9*dp.facing, fy + 1);
+    cx.beginPath(); cx.moveTo(x - 11*DEEP_SCALE*dp.facing, fy + 1);
+    cx.quadraticCurveTo(x - 1*DEEP_SCALE*dp.facing, fy - 17*DEEP_SCALE, x + 9*DEEP_SCALE*dp.facing, fy + 1);
     cx.closePath(); cx.fill();
     cx.strokeStyle = 'rgba(200,235,250,0.45)'; cx.lineWidth = 1.5;
-    cx.beginPath(); cx.moveTo(x - dp.facing*12, fy + 1); cx.lineTo(x - dp.facing*34, fy + 1); cx.stroke();
+    cx.beginPath(); cx.moveTo(x - dp.facing*12*DEEP_SCALE, fy + 1); cx.lineTo(x - dp.facing*34*DEEP_SCALE, fy + 1); cx.stroke();
   } else {
     // out of the water: full figure — green suit, dorsal fin, gills
     cx.fillStyle = 'rgba(47,191,154,0.35)';
     cx.beginPath(); cx.arc(x, y-18, 34, 0, 7); cx.fill();
-    cx.save(); cx.translate(x, y); cx.scale(dp.facing*BOSS_SCALE, BOSS_SCALE);
+    cx.save(); cx.translate(x, y); cx.scale(dp.facing*BOSS_SCALE*DEEP_SCALE, BOSS_SCALE*DEEP_SCALE);
     if (dp.state === 'dolphin' && dp.stateT <= 0) {
       // the dolphin he's riding
       cx.fillStyle = '#7d8a94';
@@ -3461,6 +3794,51 @@ function drawSupe(s) {
     cx.fillStyle = '#ffe14d'; cx.fillRect(x-w/2, y-74, w*hpFrac, 7);
   }
 }
+function drawLamplighter(l) {
+  const x = l.x - camX, y = l.y - camY;
+  if (x < -110 || x > VW+110) return;
+  const f = (P.x >= l.x) ? 1 : -1;
+  cx.save(); cx.translate(x, y);
+  if (isJuggled(l)) cx.rotate(gameT*11);
+  // licking-flame aura instead of a plain glow disc — a few flickering arcs around the body
+  cx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<3;i++) {
+    const fa = gameT*3 + i*2.1;
+    cx.fillStyle = 'rgba(255,'+(90+i*30)+',30,0.28)';
+    cx.beginPath(); cx.arc(Math.sin(fa)*6, -6+Math.cos(fa*1.3)*5, 26+i*3, 0, 7); cx.fill();
+  }
+  cx.globalCompositeOperation = 'source-over';
+  cx.scale(f, 1);
+  if (l.flash > 0) { cx.globalAlpha = 0.85; cx.translate(rand(-1.8,1.8), rand(-1.8,1.8)); }
+  cx.fillStyle = '#ff6a1a';   // flame cape
+  cx.beginPath(); cx.moveTo(-4, -16);
+  cx.quadraticCurveTo(-22 - Math.sin(gameT*7)*6, 0, -16 - Math.sin(gameT*6)*8, 22);
+  cx.lineTo(-4, 12); cx.closePath(); cx.fill();
+  cx.fillStyle = '#2a1610';   // dark ember suit
+  cx.fillRect(-7, -18, 14, 26);
+  cx.strokeStyle = '#2a1610'; cx.lineWidth = 6;
+  cx.beginPath(); cx.moveTo(-3, 8); cx.lineTo(-5, 24); cx.moveTo(3, 8); cx.lineTo(6, 22); cx.stroke();
+  cx.fillStyle = '#d4a888'; cx.beginPath(); cx.arc(0, -24, 6.5, 0, 7); cx.fill();
+  cx.fillStyle = '#1c0e08'; cx.beginPath(); cx.arc(0, -26, 6.6, Math.PI*1.05, Math.PI*1.95); cx.fill();
+  // ember-glow chest, pulsing — his signature instead of Starlight's star
+  cx.fillStyle = 'rgba(255,150,50,'+(0.6+0.35*Math.abs(Math.sin(gameT*6)))+')';
+  cx.beginPath(); cx.arc(0, -10, 4, 0, 7); cx.fill();
+  cx.restore();
+  cx.globalAlpha = 1;
+  if (l.breathing) {
+    // dragon-breath cone toward the player — triangular gradient flame
+    const ang = Math.atan2(P.y-l.y, P.x-l.x);
+    cx.save(); cx.translate(x, y); cx.rotate(ang);
+    const grad = cx.createLinearGradient(0,0,220,0);
+    grad.addColorStop(0, 'rgba(255,220,120,0.85)'); grad.addColorStop(0.4, 'rgba(255,120,30,0.55)'); grad.addColorStop(1, 'rgba(255,60,20,0)');
+    cx.fillStyle = grad;
+    cx.beginPath(); cx.moveTo(0,0); cx.lineTo(220, -60); cx.lineTo(220, 60); cx.closePath(); cx.fill();
+    cx.restore();
+  }
+  const w = 60, hpFrac = clamp(l.hp/l.maxHp, 0, 1);
+  cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-74, w, 7);
+  cx.fillStyle = '#ff8a3a'; cx.fillRect(x-w/2, y-74, w*hpFrac, 7);
+}
 function drawHeli(h) {
   const x = h.x - camX, y = h.y - camY;
   if (x < -170 || x > VW+170) return;
@@ -3706,24 +4084,37 @@ function drawFx() {
   for (const eb of electroBolts) {
     cx.save(); cx.translate(eb.x - camX, eb.y - camY); cx.rotate(Math.atan2(eb.vy,eb.vx));
     cx.globalCompositeOperation = 'lighter';
-    // classic angular thunderbolt spine — sharp zigzag, no curves
-    const jag = [[-48,0],[-32,-14],[-18,4],[-4,-18],[10,3],[24,-12],[48,0]];
+    // classic angular thunderbolt spine — sharp zigzag, no curves. shorter overall (was a 96-unit
+    // spine that read as one giant squiggle) and roughly double the segments, so it reads as a
+    // tight bolt streak instead of a single oversized zigzag
+    const jag = [[-26,0],[-19,-8],[-12,3],[-6,-9],[0,4],[6,-10],[12,2],[19,-7],[26,0]];
     const strokeJag = (color, width) => {
       cx.strokeStyle = color; cx.lineWidth = width; cx.lineJoin = 'miter'; cx.lineCap = 'round';
       cx.beginPath(); cx.moveTo(jag[0][0],jag[0][1]);
       for (let i=1;i<jag.length;i++) cx.lineTo(jag[i][0],jag[i][1]);
       cx.stroke();
     };
-    strokeJag('rgba(255,240,100,0.35)', 8);   // soft outer glow, no blob
-    strokeJag('#fff35a', 3);                  // core bolt color
-    strokeJag('rgba(255,255,255,0.95)', 1.1); // hot white center
+    strokeJag('rgba(255,240,100,0.35)', 6);   // soft outer glow, no blob
+    strokeJag('#fff35a', 2.2);                // core bolt color
+    strokeJag('rgba(255,255,255,0.95)', 0.9); // hot white center
     // small forking branches off the spine, for the classic thunderbolt look
-    cx.strokeStyle = 'rgba(255,245,150,0.85)'; cx.lineWidth = 1.5; cx.lineCap = 'round';
+    cx.strokeStyle = 'rgba(255,245,150,0.85)'; cx.lineWidth = 1.2; cx.lineCap = 'round';
     cx.beginPath();
-    cx.moveTo(-18,4); cx.lineTo(-24,16);
-    cx.moveTo(-4,-18); cx.lineTo(2,-30);
-    cx.moveTo(10,3); cx.lineTo(16,15);
+    cx.moveTo(-12,3); cx.lineTo(-16,10);
+    cx.moveTo(0,4); cx.lineTo(2,12);
+    cx.moveTo(12,2); cx.lineTo(16,9);
     cx.stroke();
+    cx.restore();
+  }
+  // Lamplighter's fireballs: a hot core with a licking flame tail
+  for (const fb of fireballs) {
+    cx.save(); cx.translate(fb.x - camX, fb.y - camY); cx.rotate(Math.atan2(fb.vy,fb.vx));
+    cx.globalCompositeOperation = 'lighter';
+    const gl = cx.createRadialGradient(0,0,1, 0,0,14);
+    gl.addColorStop(0,'rgba(255,240,180,0.95)'); gl.addColorStop(0.5,'rgba(255,140,40,0.75)'); gl.addColorStop(1,'rgba(255,80,20,0)');
+    cx.fillStyle = gl; cx.beginPath(); cx.arc(0,0,14,0,7); cx.fill();
+    cx.fillStyle = 'rgba(255,120,30,0.6)';
+    cx.beginPath(); cx.moveTo(-8,0); cx.lineTo(-24,-6); cx.lineTo(-16,0); cx.lineTo(-24,6); cx.closePath(); cx.fill();
     cx.restore();
   }
   for (const lb of lightBalls) {
@@ -3754,6 +4145,13 @@ function drawFx() {
     cx.fillStyle = 'rgba(255,190,80,0.95)'; cx.beginPath(); cx.arc(-12,0, rand(3.5,6), 0, 7); cx.fill();
     cx.restore();
   }
+  // A-Train's thrown rubble — a tumbling chunk of street, not a clean projectile
+  for (const rb of atrainDebris) {
+    cx.save(); cx.translate(rb.x - camX, rb.y - camY); cx.rotate(gameT*9 + rb.x*0.03);
+    cx.fillStyle = '#3a3346'; cx.fillRect(-8,-7,16,14);
+    cx.fillStyle = '#2e2638'; cx.fillRect(-8,3,16,4);
+    cx.restore();
+  }
 }
 function draw() {
   cx.save();
@@ -3780,6 +4178,7 @@ function draw() {
   for (const d of deeps) if (!d.dead) drawDeep(d);
   for (const car of cars) if (car.dir > 0) drawCar(car);
   for (const s of supes) drawSupe(s);
+  for (const l of lamplighters) if (!l.dead) drawLamplighter(l);
   for (const h of helis) drawHeli(h);
   drawFx();
   drawPlayer();
