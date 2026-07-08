@@ -356,7 +356,7 @@ const P = {
   dashT: 0, dashCd: 0, dashDir: {x:1,y:0},
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
   grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
-  underwaterT: 0, wasUnder: false, carried: false,
+  underwaterT: 0, wasUnder: false, carried: false, slamStartY: 0,
 };
 const inWater = (x, y) => x > WATER_X && y > GROUND_Y;
 // world-space street lamp positions (matches the visual spacing in drawCity) — used as light-ball spawn points
@@ -409,6 +409,7 @@ function startDash(dir) {
   // ground-proximity check below end it the instant it actually gets there. Straight up is just the
   // regular dash-punch, held a hair longer than normal for a bit of extra height.
   P.vertDash = (dir === 'down') ? dir : null;
+  if (P.vertDash) P.slamStartY = P.y;   // remembered so the landing can scale its punch with how far he actually fell
   P.dashT = P.vertDash ? 3 : (dir === 'up' ? 0.38 : 0.30);
   P.bigLaunch = false;   // a fast 3rd tap of Up (see keydown handler) upgrades this into the big launch
   P.dashCd = 0.55;
@@ -418,7 +419,7 @@ function startDash(dir) {
 function thunderclap() {
   if (P.clapCd > 0 || paused || P.stunT > 0) return;
   P.clapCd = 2.4;
-  freezeT = 0.06;
+  freezeT = Math.max(freezeT, 0.06);
   const R = 320;
   rings.push({x:P.x, y:P.y, r:14, life:0.5, w:6});
   rings.push({x:P.x, y:P.y, r:2, life:0.7, w:3});
@@ -509,6 +510,9 @@ function announceBossKill(name, x, y) {
   bossFlashT = 0.35;
   shake(30);
   sfxBoom(); thump(30, 1.1, 0.55);
+  // a beat of true freeze-frame (same mechanic thunderclap already uses) — a boss kill is rare
+  // enough to earn a bigger one than anything else in the game gets
+  freezeT = Math.max(freezeT, 0.12);
   for (let i=0;i<10;i++) rings.push({x, y, r: rand(4,16), life: rand(0.6,1.1), w: rand(3,6)});
 }
 let bossFlashT = 0;
@@ -719,7 +723,7 @@ function trainCarDeath(t, i, cxw) {
     vx: t.dir*t.sp*0.3+rand(-120,120), vy: rand(-160,-20), rot: rand(0,7), vr: rand(-6,6),
     r: rand(8,16)*TRAIN_SCALE*0.5, c: wreckColors[randi(0,3)], life: rand(2.5,4), heavy: true });
   gibBurst(cxw, RAIL_Y-CAR_CENTER_OFF, 1.1, false, t.dir*t.sp*0.3, -80);
-  shake(12); sfxBoom();
+  shake(12); sfxBoom(); freezeT = Math.max(freezeT, 0.05);
 }
 // ─── Tanks: late-game armor — slow, tough, shells that blow chunks out of buildings ───
 function spawnTank() {
@@ -735,7 +739,7 @@ function tankDeath(tk) {
   bakeScorch(tk.x, GROUND_Y, 46);
   for (let k=0;k<6;k++) debris.push({ x: tk.x+rand(-20,20), y: tk.y-16, vx: rand(-220,220), vy: rand(-320,-80),
     rot: rand(0,7), vr: rand(-6,6), r: rand(4,9), c: '#2c352f', life: rand(1.5,3), heavy: true });
-  shake(14);
+  shake(14); freezeT = Math.max(freezeT, 0.05);
 }
 // ─── Sharks: blood in the water draws fins; they hunt the swimmers you've panicked ───
 function spawnShark() {
@@ -754,6 +758,10 @@ const CELL_COST = 2200;   // smaller cells, smaller price each
 // tunable combat balance knobs — bump/drop these, not the individual damage lines, to rebalance
 const LASER_DMG_MULT = 1.2;   // the beam hits 20% harder across every target, buildings included
 const DASH_DMG_MULT = 0.9;    // dash/punch-through damage dialed back 10% to compensate
+// an upward dash-punch already sends a supe flying with real velocity — this rewards following
+// up on that airborne window instead of it just being incidental knockback
+const JUGGLE_DMG_MULT = 1.5;
+function isJuggled(s) { return s.vy < -150; }
 const LASER_CELL_RATE = 16.5 * LASER_DMG_MULT;   // fill-per-second on a cell the beam (or player) is drilling through
 const JET_SCALE = 2.3;
 function destroyCell(b, i, wx, wy, quiet) {
@@ -951,6 +959,7 @@ function heliDeath(h) {
 
 // ─── Gore ───
 const GIB_COLORS = ['#a01818','#7d1010','#b32222','#5e0c0c'];
+const GIB_SHAPES = ['rect', 'blob', 'scrap'];   // limb-like, rounder torso-like, small irregular scrap
 function gibBurst(x, y, power, big, bvx, bvy) {
   bvx = bvx||0; bvy = bvy||0;
   const n = big ? 14 : randi(7,10);
@@ -958,7 +967,8 @@ function gibBurst(x, y, power, big, bvx, bvy) {
     const a = rand(0, Math.PI*2), sp = rand(80, 280)*power;
     gibs.push({ x, y, vx: Math.cos(a)*sp + rand(-40,40) + bvx, vy: Math.sin(a)*sp - rand(60,220) + bvy,
       rot: rand(0,Math.PI*2), vr: rand(-9,9), r: rand(3, big?9:6.5),
-      c: GIB_COLORS[randi(0,3)], life: rand(2.5,4), head: i===0 && Math.random()<0.7 });
+      c: GIB_COLORS[randi(0,3)], life: rand(2.5,4), head: i===0 && Math.random()<0.7,
+      shape: GIB_SHAPES[randi(0,2)] });
   }
   const bn = big ? 42 : 26;
   for (let i=0;i<bn;i++) {
@@ -1019,7 +1029,9 @@ function update(dt) {
     for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
     for (const car of cars) if (!car.dead && dist2(P.x,P.y,car.x,car.y-10) < 64*64) carBoom(car);
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
-      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT : 0;
+      // checked before this dash's own velocity nudge below — rewards catching a target already
+      // airborne from an earlier hit, not just this one
+      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*(isJuggled(s) ? JUGGLE_DMG_MULT : 1) : 0;
       s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
@@ -1056,25 +1068,30 @@ function update(dt) {
     }
     for (const s of sharks) if (!s.dead && dist2(P.x,P.y,s.x,s.y) < 70*70) sharkDeath(s);
     damageCellsInRadius(P.x + P.dashDir.x*24, P.y + P.dashDir.y*24, 46, 1);
+    // a slam from just above the ground and a slam from the top of the tallest building used to
+    // land identically — scale the payoff with how far he actually fell, 1x for a short hop up to
+    // 2x for clearing real altitude, so climbing high before slamming is worth it
+    const slamScale = 1 + clamp(P.y - P.slamStartY, 0, 1800)/1800;
     // slamming over open water: punch through the surface with a splash, bottom out at the sea floor
     if (P.dashDir.y > 0.5 && P.x > WATER_X) {
-      if (P.y <= GROUND_Y && P.y + 1650*dt > GROUND_Y) splash(P.x, 900);
+      if (P.y <= GROUND_Y && P.y + 1650*dt > GROUND_Y) splash(P.x, 900*slamScale);
       if (P.y >= WATER_FLOOR - 70) {
         P.dashT = 0; P.vertDash = null; P.y = WATER_FLOOR - 50; P.vy = 0;
         for (let i=0;i<12;i++) bubbleAt(P.x + rand(-40,40), P.y + rand(-10,10));
-        thump(40, 0.4, 0.3); shake(8);
+        thump(40, 0.4, 0.3); shake(8*slamScale);
       }
     } else if (P.dashDir.y > 0.5 && P.y >= GROUND_Y - 60) {
       P.dashT = 0; P.vertDash = null; P.y = GROUND_Y - 40; P.vy = 0; P.grounded = true; P.hopping = false;
-      rings.push({x:P.x, y:GROUND_Y-8, r:12, life:0.55, w:6});
-      bakeScorch(P.x, GROUND_Y, 60);
+      rings.push({x:P.x, y:GROUND_Y-8, r:12*slamScale, life:0.55, w:6});
+      bakeScorch(P.x, GROUND_Y, 60*slamScale);
       for (let i=0;i<14;i++) smokes.push({ x:P.x+rand(-60,60), y:GROUND_Y-rand(0,26), r:rand(12,26), vr:rand(30,55), vy:rand(-40,-10), life:rand(0.7,1.4), c:'rgba(110,95,105,' });
-      shake(16); sfxBoom(); thump(36, 0.6, 0.45);
-      const R = 300;
+      shake(16*slamScale); sfxBoom(); thump(36, 0.6, 0.45);
+      if (slamScale > 1.4) freezeT = Math.max(freezeT, 0.05);   // a genuinely big drop earns its own tiny hit-stop
+      const R = 300*slamScale;
       for (const g of grunts) if (!g.dead && g.y > GROUND_Y-140 && Math.abs(g.x-P.x) < R) { g.dead=true; gibBurst(g.x,g.y-16,1.4,false,(g.x<P.x?-1:1)*300,-260); addKill(); }
       for (const c of civs) if (!c.dead && Math.abs(c.x-P.x) < R) { c.dead=true; gibBurst(c.x,c.y-14,1.2,false,(c.x<P.x?-1:1)*300,-260); addKill(); }
       for (const car of cars) if (!car.dead && Math.abs(car.x-P.x) < R) carBoom(car);
-      damageCellsInRadius(P.x, GROUND_Y-40, 120, 0.5);
+      damageCellsInRadius(P.x, GROUND_Y-40, 120*slamScale, 0.5);
     }
   } else if (P.grounded) {
     // ── grounded: running along whatever surface he's standing on, small hops in place.
@@ -1279,7 +1296,7 @@ function update(dt) {
       if (Math.random()<0.3) smokes.push({ x:beamEndX, y:beamEndY, r:rand(4,9), vr:rand(14,26), vy:rand(-40,-15), life:rand(0.4,0.8), c:'rgba(80,72,84,' });
     } else if (hitSupe) {
       const s = hitSupe;
-      s.hp -= DPS*dt; s.smokeT = 0.1; s.flash = 0.1;
+      s.hp -= DPS*dt*(isJuggled(s) ? JUGGLE_DMG_MULT : 1); s.smokeT = 0.1; s.flash = 0.1;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-5,5), y:beamEndY+rand(-6,6), vx:rand(-140,140), vy:rand(-180,20), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffbb44':'#ff5533' });
       if (Math.random()<0.35) smokes.push({ x:s.x+rand(-8,8), y:s.y+rand(-10,6), r:rand(4,8), vr:rand(12,22), vy:rand(-50,-20), life:rand(0.35,0.7), c:'rgba(70,62,74,' });
       if (s.hp <= 0) { gibBurst(s.x, s.y, 1.5, true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
@@ -1588,7 +1605,7 @@ function update(dt) {
       h.smokeCd -= dt;
       if (h.smokeCd <= 0) { h.smokeCd = 0.05; smokes.push({x:h.x, y:h.y, r:rand(8,16), vr:rand(20,40), vy:rand(-30,0), life:rand(0.5,0.9), c:'rgba(96,90,100,'}); }
       const s = surfaceBelow(h.x, h.y - 40);
-      if (h.y >= s - 20) { h.gone = true; explode(h.x, s-10, 95, 0.8); flashScorch(h.x, s, 60); }
+      if (h.y >= s - 20) { h.gone = true; explode(h.x, s-10, 95, 0.8); flashScorch(h.x, s, 60); bakeScorch(h.x, s, 40); freezeT = Math.max(freezeT, 0.05); }
       continue;
     }
     const want = P.x + (h.x > P.x ? h.holdDist : -h.holdDist);
@@ -2354,7 +2371,13 @@ function update(dt) {
       for (const gr of grunts) if (!gr.dead && dist2(g.x,g.y,gr.x,gr.y-16) < 18*18) { gr.dead=true; gibBurst(gr.x,gr.y-16,1); addKill(); }
     }
     const s = surfaceBelow(g.x, g.y - 20);
-    if (g.y > s - g.r) { g.y = s - g.r; g.vy *= -0.3; g.vx *= 0.6; }
+    if (g.y > s - g.r) {
+      // heavy chunks (vehicle wreckage, building rubble) mark the ground the first time they land
+      // hard — buildings already leave a persistent rubble pile of their own, but wrecked tanks,
+      // trains and helis previously vanished without a trace once their debris chunks faded out
+      if (g.heavy && !g.baked && Math.abs(g.vy) > 80) { g.baked = true; bakeScorch(g.x, s, rand(10,18)); }
+      g.y = s - g.r; g.vy *= -0.3; g.vx *= 0.6;
+    }
   }
   debris = debris.filter(g => g.life > 0);
   if (debris.length > 300) debris.splice(0, debris.length-300);
@@ -3179,7 +3202,9 @@ function drawSupe(s) {
   if (x < -110 || x > VW+110) return;
   const f = (P.x >= s.x) ? 1 : -1;
   const sc = s.boss ? BOSS_SCALE : 1;
-  cx.save(); cx.translate(x, y); cx.scale(f*sc, sc);
+  cx.save(); cx.translate(x, y);
+  if (isJuggled(s)) cx.rotate(gameT*11);   // visibly tumbling from a launch, not just floating
+  cx.scale(f*sc, sc);
   if (s.boss) {
     cx.fillStyle = 'rgba(255,225,120,0.45)';
     cx.beginPath(); cx.arc(0, -6, 30, 0, 7); cx.fill();
@@ -3349,9 +3374,18 @@ function drawLaser() {
 }
 function drawFx() {
   for (const g of debris) {
+    // picked once and cached on the object rather than touching every debris.push() call site
+    // scattered across the file — a little shape variety so a debris field doesn't read as one
+    // recolored rectangle everywhere
+    if (g.shapeChunk === undefined) g.shapeChunk = Math.random() < 0.35;
     cx.save(); cx.translate(g.x - camX, g.y - camY); cx.rotate(g.rot);
     cx.globalAlpha = clamp(g.life, 0, 1);
-    cx.fillStyle = g.c; cx.fillRect(-g.r, -g.r*0.7, g.r*2, g.r*1.4);
+    cx.fillStyle = g.c;
+    if (g.shapeChunk) {
+      cx.beginPath();
+      cx.moveTo(-g.r, -g.r*0.5); cx.lineTo(g.r*0.6, -g.r*0.8); cx.lineTo(g.r, g.r*0.4); cx.lineTo(-g.r*0.5, g.r*0.7);
+      cx.closePath(); cx.fill();
+    } else { cx.fillRect(-g.r, -g.r*0.7, g.r*2, g.r*1.4); }
     cx.restore();
   }
   for (const g of gibs) {
@@ -3359,7 +3393,15 @@ function drawFx() {
     cx.globalAlpha = clamp(g.life, 0, 1);
     if (g.head) { cx.fillStyle='#c8a080'; cx.beginPath(); cx.arc(0,0,g.r*0.9,0,7); cx.fill();
       cx.fillStyle='#7d1010'; cx.fillRect(-g.r*0.7, g.r*0.3, g.r*1.4, g.r*0.5); }
-    else { cx.fillStyle = g.c; cx.fillRect(-g.r, -g.r*0.6, g.r*2, g.r*1.2); }
+    else {
+      cx.fillStyle = g.c;
+      if (g.shape === 'blob') { cx.beginPath(); cx.ellipse(0, 0, g.r*1.1, g.r*0.85, 0, 0, 7); cx.fill(); }
+      else if (g.shape === 'scrap') {
+        cx.beginPath();
+        cx.moveTo(-g.r, -g.r*0.5); cx.lineTo(g.r*0.8, -g.r*0.7); cx.lineTo(g.r*0.6, g.r*0.8); cx.lineTo(-g.r*0.7, g.r*0.5);
+        cx.closePath(); cx.fill();
+      } else { cx.fillRect(-g.r, -g.r*0.6, g.r*2, g.r*1.2); }
+    }
     cx.restore();
   }
   cx.globalAlpha = 1;
