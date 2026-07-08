@@ -452,7 +452,7 @@ function thunderclap() {
     a.hp -= 90;
     if (a.hp<=0) maeveDeath(a);
   }
-  for (const dp of deeps) if (!dp.dead && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
+  for (const dp of deeps) if (!dp.dead && !inWater(dp.x,dp.y) && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
     dp.hp -= 90;
     if (dp.hp<=0) deepDeath(dp);
   }
@@ -994,7 +994,7 @@ function update(dt) {
       rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
       if (a.hp<=0) maeveDeath(a);
     }
-    for (const dp of deeps) if (!dp.dead && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
+    for (const dp of deeps) if (!dp.dead && !inWater(dp.x,dp.y) && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
       dp.hp -= 260;
       rings.push({x:dp.x,y:dp.y-10,r:10,life:0.4,w:3});
       if (dp.hp<=0) deepDeath(dp);
@@ -1293,10 +1293,14 @@ function update(dt) {
       if (a.hp <= 0) maeveDeath(a);
     }
     for (const dp of deeps) if (!dp.dead && segDist(dp.x, dp.y-12, ex, ey, beamEndX, beamEndY) < 24) {
-      dp.hp -= 380*dt;
-      if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
-      else if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
-      if (dp.hp <= 0) deepDeath(dp);
+      if (inWater(dp.x, dp.y)) {
+        // submerged and untouchable — the beam just sizzles off the water over him
+        if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16));
+      } else {
+        dp.hp -= 380*dt;
+        if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+        if (dp.hp <= 0) deepDeath(dp);
+      }
     }
     if (Math.random() < 0.8) sparks.push({ x: beamEndX+rand(-4,4), y: beamEndY+rand(-4,4),
       vx: rand(-160,160), vy: rand(-200,40), life: rand(0.1,0.35), c: Math.random()<0.5?'#ffdd66':'#ff5533' });
@@ -1648,19 +1652,21 @@ function update(dt) {
     } else { // 'run'
       a.stateT -= dt;
       a.fleeCd -= dt;
-      // evasion: if you're dashing at him or lasering nearby, dart hard away — long sprint,
-      // often clean off the edge of the screen and back, not just a sidestep
+      // evasion: if you're dashing at him or lasering anywhere near him, dart hard away — long
+      // sprint, often clean off the edge of the screen and back, not just a sidestep. The old
+      // 280-unit firing radius meant he basically never reacted to the beam at any real range —
+      // the laser reaches most of the screen, so his "am I threatened" check needs to too
       const threatened = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 320*320) ||
-                          (firing && dist2(P.x,P.y,a.x,a.y) < 280*280);
+                          (firing && dist2(P.x,P.y,a.x,a.y) < 950*950);
       if (threatened && a.fleeCd <= 0) {
         a.wanderX = clamp(a.x + (a.x < P.x ? -1 : 1) * rand(700,1300), 60, WORLD_W-60);
-        a.stateT = rand(0.7,1.2); a.fleeCd = 0.5;
+        a.stateT = rand(0.7,1.2); a.fleeCd = 0.3;
       } else if (a.stateT <= 0) {
         // long, fast sweeps that carry him well past the edges of the screen and back
         a.wanderX = clamp(P.x + (Math.random()<0.5?-1:1)*rand(500,1300), 60, WORLD_W-60);
         a.stateT = rand(0.5,1.1);
       }
-      const vx = clamp((a.wanderX - a.x)*6, -2400, 2400);
+      const vx = clamp((a.wanderX - a.x)*6, threatened ? -3100 : -2400, threatened ? 3100 : 2400);
       a.x += vx*dt;
       a.facing = vx >= 0 ? 1 : -1;
       a.atkCd -= dt;
@@ -1672,18 +1678,26 @@ function update(dt) {
       a.roofCd -= dt;
       if (a.roofCd <= 0) {
         a.roofCd = rand(0.7, 1.6);   // checks in more often, so he's climbing/wall-running far more of the time
-        // bias ground/rooftop choice toward whichever surface is closer to the player's height —
-        // he's trying to get to your altitude, not just coin-flipping — but generally favors rooftops
+        // bias ground/rooftop/rail choice toward whichever surface is closer to the player's height —
+        // he's trying to get to your altitude, not just coin-flipping — but generally favors rooftops.
+        // the elevated rail only exists over the city, so it's only ever an option there.
+        const railDist = Math.abs(P.y - RAIL_Y);
+        const railInPlay = a.x < CITY_W - 100;
         if (a.mode === 'ground') {
           const idx = findBuildingIndexAt(a.x);
-          if (idx >= 0) {
-            const roofDist = Math.abs(P.y - fgBuildings[idx].roofY), groundDist = Math.abs(P.y - GROUND_Y);
-            if (Math.random() < (roofDist < groundDist ? 0.95 : 0.55)) { a.mode = 'roof'; a.buildingIdx = idx; }
-          }
-        } else {
+          const roofDist = idx >= 0 ? Math.abs(P.y - fgBuildings[idx].roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
+          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.7) {
+            a.mode = 'rail';
+          } else if (idx >= 0 && Math.random() < (roofDist < groundDist ? 0.95 : 0.55)) { a.mode = 'roof'; a.buildingIdx = idx; }
+        } else if (a.mode === 'roof') {
           const b = fgBuildings[a.buildingIdx];
           const roofDist = b ? Math.abs(P.y - b.roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
-          if (Math.random() < (groundDist < roofDist ? 0.4 : 0.1)) { a.mode = 'ground'; a.buildingIdx = -1; }
+          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.5) {
+            a.mode = 'rail';
+          } else if (Math.random() < (groundDist < roofDist ? 0.4 : 0.1)) { a.mode = 'ground'; a.buildingIdx = -1; }
+        } else { // 'rail'
+          const groundDist = Math.abs(P.y - GROUND_Y);
+          if (!railInPlay || (railDist > groundDist && Math.random() < 0.5)) { a.mode = 'ground'; a.buildingIdx = -1; }
         }
       }
     }
@@ -1707,9 +1721,11 @@ function update(dt) {
         if (!hopped) a.mode = 'ground';
       }
     }
-    const targetY = (a.mode === 'roof' && fgBuildings[a.buildingIdx]) ? fgBuildings[a.buildingIdx].roofY - 4 : GROUND_Y - 4;
+    const targetY = (a.mode === 'roof' && fgBuildings[a.buildingIdx]) ? fgBuildings[a.buildingIdx].roofY - 4
+                  : a.mode === 'rail' ? RAIL_Y - 4
+                  : GROUND_Y - 4;
     a.y += clamp(targetY - a.y, -2600*dt, 2600*dt);   // fast wall-run transition, not a teleport
-    a.x = clamp(a.x, 40, WORLD_W-40);
+    a.x = clamp(a.x, 40, a.mode === 'rail' ? CITY_W - 60 : WORLD_W-40);   // the rail ends at the dock
     // speedsters run on water — spray a wake behind him when he's sprinting the surface
     if (a.x > WATER_X && a.y > GROUND_Y - 30 && Math.random() < dt*24)
       sparks.push({ x: a.x - a.facing*rand(4,22), y: GROUND_Y+1, vx: -a.facing*rand(30,100),
@@ -1743,7 +1759,7 @@ function update(dt) {
       } else if (a.stateT <= 0) {
         a.state = 'skid'; a.stateT = rand(0.4,0.7);
       }
-      a.x = clamp(a.x, 40, WATER_X - 50);   // she can't run on water — the dock edge is her limit
+      a.x = clamp(a.x, 40, WATER_X + 260);   // can't swim, but she'll wade into the shallows to stay a threat
       a.y = clamp(a.y, 80, GROUND_Y-20);
       continue;   // under her own lunge velocity — skip the surface-tracking pull below
     }
@@ -1769,8 +1785,9 @@ function update(dt) {
       a.facing = vx >= 0 ? 1 : -1;
       a.atkCd -= dt;
       const vertGap = a.y - P.y;   // positive when the player is above her — that's when she jumps
-      // much more reach than a flying supe's lunge needs — she has to close a real gap from the ground
-      if (a.atkCd <= 0 && Math.abs(P.x-a.x) < 460 && vertGap > 0 && vertGap < 900) {
+      // much more reach than a flying supe's lunge needs — she has to close a real gap from the ground;
+      // a small negative gap is still fair game so a shallow dip at the shoreline doesn't wave her off
+      if (a.atkCd <= 0 && Math.abs(P.x-a.x) < 460 && vertGap > -220 && vertGap < 900) {
         a.state = 'crouch'; a.stateT = 0.3; a.atkCd = rand(2.6,3.8);
       }
       a.roofCd -= dt;
@@ -1823,12 +1840,14 @@ function update(dt) {
       dp.facing = P.x >= dp.x ? 1 : -1;
       if (P.underwaterT > 3 && inWater(P.x, P.y)) {
         dp.state = 'grabdash'; dp.stateT = 1.5;   // you stayed down too long — he's coming
-      } else if (dp.atkCd <= 0 && P.x > WATER_X - 200 && P.y < GROUND_Y - 20 && Math.abs(P.x - dp.x) < 760) {
+      } else if (dp.atkCd <= 0 && P.x > WATER_X - 200 && P.y < WATER_FLOOR - 40 && Math.abs(P.x - dp.x) < 760) {
+        // he reacts whether you're on the surface or shallowly submerged — only camping deep and
+        // still is safe from these, and that's exactly what feeds the 3-second grab check above
         const r = Math.random();
         if (r < 0.45) { dp.state = 'crouch'; dp.stateT = 0.35; }
         else if (r < 0.72) { dp.state = 'volley'; dp.stateT = 0.3; }
         else { dp.state = 'dolphin'; dp.stateT = 0.35; dp.chargeDir = P.x >= dp.x ? 1 : -1; }
-        dp.atkCd = rand(2.2, 3.4);
+        dp.atkCd = rand(1.7, 2.6);
       }
       // tentacle from below punishes hovering lazily just over the waves
       if (dp.tentCd <= 0 && P.x > WATER_X + 80 && P.y > GROUND_Y - 170 && P.y < GROUND_Y - 4) {
@@ -2176,7 +2195,9 @@ function update(dt) {
     if (dist2(eb.x,eb.y,P.x,P.y) < 32*32) {
       eb.life = 0; P.stunT = 2; boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
       for (let i=0;i<10;i++) sparks.push({x:eb.x,y:eb.y,vx:rand(-160,160),vy:rand(-160,160),life:rand(0.2,0.4),c:'#fff35a'});
-    } else if (cellIntactAt(eb.x, eb.y) || eb.y > GROUND_Y) eb.life = 0;
+    // GROUND_Y is also the water surface — a bolt crossing it out in the water zone should keep
+    // going (so she can still tag you underwater) instead of fizzling the instant it touches water
+    } else if (cellIntactAt(eb.x, eb.y) || (eb.y > GROUND_Y && (eb.x <= WATER_X || eb.y > WATER_FLOOR))) eb.life = 0;
   }
   electroBolts = electroBolts.filter(eb => eb.life > 0);
 
@@ -2191,7 +2212,7 @@ function update(dt) {
       lb.life = 0; P.hurtFlash = 1; shake(8); sfxHit();
       const kd = Math.hypot(P.x-lb.x,P.y-lb.y)||1;
       P.vx += (P.x-lb.x)/kd*260; P.vy += (P.y-lb.y)/kd*260;
-    } else if (cellIntactAt(lb.x, lb.y) || lb.y > GROUND_Y) lb.life = 0;
+    } else if (cellIntactAt(lb.x, lb.y) || (lb.y > GROUND_Y && (lb.x <= WATER_X || lb.y > WATER_FLOOR))) lb.life = 0;
   }
   lightBalls = lightBalls.filter(lb => lb.life > 0);
 
