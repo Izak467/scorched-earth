@@ -82,6 +82,10 @@ function bakeSplat(x, y, r, color, alpha) {
 }
 function bakeScorch(x, y, r) {
   if (x > WATER_X - 4) return;
+  // permanent, so a circle straddling the shoreline would sit there half-clipped by the water
+  // rendering forever instead of fading — clamp it to stay entirely on dry land
+  r = Math.min(r, WATER_X - x);
+  if (r <= 1) return;
   dcx.globalAlpha = 0.5; dcx.fillStyle = '#0c0a0a';
   dcx.beginPath(); dcx.arc(x*DS, y*DS, r*DS, 0, 7); dcx.fill();
   dcx.globalAlpha = 1;
@@ -108,7 +112,7 @@ function bubbleAt(x, y) {
 }
 // transient scorch: for heli/rocket/car blasts — fades out instead of staying baked forever
 let scorchFx = [];
-function flashScorch(x, y, r) { if (x > WATER_X) return; scorchFx.push({x, y, r, life: 1.3, maxLife: 1.3}); }
+function flashScorch(x, y, r) { if (x > WATER_X) return; scorchFx.push({x, y, r: Math.min(r, WATER_X - x), life: 1.3, maxLife: 1.3}); }
 
 // ─── City generation ───
 const fgBuildings = [];
@@ -164,9 +168,10 @@ const containers = [];
   let x = CITY_W + 140;
   while (x < WATER_X - 300) {
     if (Math.random() < 0.8) {
-      const stack = randi(1, 4);
+      const stack = randi(2, 5);
       for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
-        c: ['#8a3a2a','#2f6b8a','#3d7a46','#8a7a2f','#5d5d66'][randi(0,4)], dead: false, vy: 0 });
+        c: ['#8a3a2a','#2f6b8a','#3d7a46','#8a7a2f','#5d5d66'][randi(0,4)], dead: false, vy: 0, vx: 0,
+        hp: 140, maxHp: 140 });
       x += 122;
     } else x += rand(50, 130);
   }
@@ -473,7 +478,7 @@ function thunderclap() {
   for (const t of trains) for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
     const cxw = trainCarX(t, i);
-    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
+    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; c.flash = 0.15; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
   }
   // detonate incoming rockets mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
@@ -485,6 +490,7 @@ function thunderclap() {
 let grunts = [], civs = [], supes = [], helis = [], cars = [], bullets = [], rockets = [], fallers = [];
 let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = [], debris = [], embers = [];
 let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
+let mirrorBeam = null;   // Maeve's braced shield reflects an active second beam segment — set fresh each frame it's live
 let deeps = [], fishes = [], tentacles = [];
 let trains = [], tanks = [], shells = [], sharks = [];
 let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70);
@@ -579,14 +585,14 @@ function spawnSupe() {
   const pool = free.length ? free : SUPE_PALETTES;
   const pal = pool[randi(0,pool.length-1)];
   supes.push({ x: clamp(P.x + side*(VW*0.6+200), 100, WORLD_W-100), y: rand(300, 1100),
-    vx:0, vy:0, hp: 100, state:'seek', t:0, suit:pal[0], accent:pal[1], smokeT:0, flash:0 });
+    vx:0, vy:0, hp: 120, state:'seek', t:0, suit:pal[0], accent:pal[1], smokeT:0, flash:0, launchedT:0 });
 }
 function spawnStarlight() {
   const side = Math.random()<0.5 ? -1 : 1;
   supes.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
     vx: 0, vy: 0, hp: 1000, maxHp: 1000, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
     smokeT: 0, flash: 0, boss: true, orbitDir: Math.random()<0.5?1:-1, atkCd: rand(0.6,1.0),
-    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8) });
+    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0 });
 }
 function spawnHeli() {
   const side = Math.random()<0.5 ? -1 : 1;
@@ -703,7 +709,7 @@ function spawnTrain() {
   const dir = Math.random()<0.5 ? -1 : 1;
   const n = 8;
   const cars = [];
-  for (let i=0;i<n;i++) cars.push({ hp: 190, dead: false });
+  for (let i=0;i<n;i++) cars.push({ hp: 190, dead: false, flash: 0 });
   trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
 }
 function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
@@ -712,7 +718,9 @@ function trainCarDeath(t, i, cxw) {
   if (c.dead) return;
   c.dead = true;
   addDamage(2.8e6);
-  explode(cxw, RAIL_Y-CAR_CENTER_OFF, 60*TRAIN_SCALE, 0, false, 0.7);
+  // no expanding ring here — the crumbling debris/gib burst already reads as the "explosion"
+  // and the ring was redundant with how many of these can go off back-to-back down one train
+  explode(cxw, RAIL_Y-CAR_CENTER_OFF, 60*TRAIN_SCALE, 0, false, 0.7, true);
   const tops = ['#7a8fae','#ae7a7a','#7aae8b','#aea77a'];
   for (let k=0;k<5;k++) fallers.push({ x: cxw+rand(-40,40)*TRAIN_SCALE, y: RAIL_Y-10*TRAIN_SCALE,
     vx: t.dir*t.sp*0.3+rand(-50,50), vy: rand(-60,20), skin: '#c8a080', top: tops[randi(0,3)], life: 5, dead: false });
@@ -724,6 +732,15 @@ function trainCarDeath(t, i, cxw) {
     r: rand(8,16)*TRAIN_SCALE*0.5, c: wreckColors[randi(0,3)], life: rand(2.5,4), heavy: true });
   gibBurst(cxw, RAIL_Y-CAR_CENTER_OFF, 1.1, false, t.dir*t.sp*0.3, -80);
   shake(12); sfxBoom(); freezeT = Math.max(freezeT, 0.05);
+  // a car left standing alone with no live neighbor on either side isn't attached to anything
+  // anymore — it goes too, and this can chain down the whole rest of the train
+  for (let j=0;j<t.cars.length;j++) {
+    const cj = t.cars[j];
+    if (cj.dead) continue;
+    const leftDead = j === 0 || t.cars[j-1].dead;
+    const rightDead = j === t.cars.length-1 || t.cars[j+1].dead;
+    if (leftDead && rightDead) trainCarDeath(t, j, trainCarX(t, j));
+  }
 }
 // ─── Tanks: late-game armor — slow, tough, shells that blow chunks out of buildings ───
 function spawnTank() {
@@ -761,7 +778,9 @@ const DASH_DMG_MULT = 0.9;    // dash/punch-through damage dialed back 10% to co
 // an upward dash-punch already sends a supe flying with real velocity — this rewards following
 // up on that airborne window instead of it just being incidental knockback
 const JUGGLE_DMG_MULT = 1.5;
-function isJuggled(s) { return s.vy < -150; }
+// a raw "is vy pointing up fast" check also fired constantly during Starlight's normal flight
+// (she's always juking/repositioning), so it's a real flag set only by an actual player launch instead
+function isJuggled(s) { return s.launchedT > 0; }
 const LASER_CELL_RATE = 16.5 * LASER_DMG_MULT;   // fill-per-second on a cell the beam (or player) is drilling through
 const JET_SCALE = 2.3;
 function destroyCell(b, i, wx, wy, quiet) {
@@ -886,14 +905,14 @@ function collapseBuilding(b) {
 }
 // hostile=true → enemy ordnance: wrecks buildings + knocks YOU, no kill credit / no friendly fire
 // scale (0-1) trims the particle-heavy visuals for frequent/small blasts (cars) without touching gameplay radius
-function explode(x, y, r, cellFrac, hostile, scale) {
+function explode(x, y, r, cellFrac, hostile, scale, noRing) {
   scale = scale === undefined ? 1 : scale;
   // an explosion should only read as an explosion (fireball, boom, shake) when it's actually
   // damaging the ship/dock structure — anything landing in open water is just a splash, not a blast
   const shipHere = x > WATER_X && (() => { const b = findBuildingAt(x); return b && !b.collapsed && !b.collapsing; })();
   const openWater = x > WATER_X && y > GROUND_Y - 20 && !shipHere;
   if (!openWater) {
-    rings.push({x, y, r: 6, life: 0.45, w: 4});
+    if (!noRing) rings.push({x, y, r: 6, life: 0.45, w: 4});
     const nSparks = Math.round(26*scale);
     for (let i=0;i<nSparks;i++) {
       const a = rand(0,7), sp = rand(60, 420);
@@ -1029,10 +1048,13 @@ function update(dt) {
     for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
     for (const car of cars) if (!car.dead && dist2(P.x,P.y,car.x,car.y-10) < 64*64) carBoom(car);
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
-      // checked before this dash's own velocity nudge below — rewards catching a target already
-      // airborne from an earlier hit, not just this one
+      // checked before this dash's own launch below — rewards catching a target already airborne
+      // from an earlier hit, not just this one
       s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*(isJuggled(s) ? JUGGLE_DMG_MULT : 1) : 0;
       s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
+      // only an upward-angled punch actually launches them into a juggle window — a sideways or
+      // downward dash is just a hit, not a setup
+      if (P.dashDir.y < -0.3) s.launchedT = 0.9;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     }
@@ -1219,6 +1241,7 @@ function update(dt) {
   const canFire = firing && P.stunT <= 0;
   if (laserGain) laserGain.gain.value = (canFire && !muted) ? 0.05 : 0;
   let beamEndX = mWX, beamEndY = mWY;
+  mirrorBeam = null;
   if (canFire) {
     const ex = P.x + P.facing*6, ey = P.y - 24;
     const tdx = mWX - ex, tdy = mWY - ey;
@@ -1307,7 +1330,7 @@ function update(dt) {
       if (h.hp <= 0) heliDeath(h);
     } else if (hitTrain) {
       const c = hitTrain.tr.cars[hitTrain.i];
-      c.hp -= 450*dt*LASER_DMG_MULT;
+      c.hp -= 450*dt*LASER_DMG_MULT; c.flash = 0.15;
       if (Math.random()<0.6) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
       if (c.hp <= 0) trainCarDeath(hitTrain.tr, hitTrain.i, hitTrain.cxw);
     } else if (hitJet) {
@@ -1335,7 +1358,14 @@ function update(dt) {
     for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
       f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
     }
-    for (const ct of containers) if (!ct.dead && segDist(ct.x+ct.w/2, ct.y+ct.h/2, ex, ey, beamEndX, beamEndY) < 56) containerBoom(ct);
+    // takes real sustained damage now instead of popping on first touch, but the beam still shoves
+    // it around like it's empty and light the whole time it's being cut into
+    for (const ct of containers) if (!ct.dead && segDist(ct.x+ct.w/2, ct.y+ct.h/2, ex, ey, beamEndX, beamEndY) < 56) {
+      ct.hp -= 450*dt*LASER_DMG_MULT;
+      ct.vx += ux*260*dt;
+      if (Math.random()<0.4) sparks.push({x:ct.x+ct.w/2+rand(-10,10),y:ct.y+ct.h/2+rand(-8,8),vx:rand(-100,100),vy:rand(-120,20),life:rand(0.12,0.3),c:'#ffdd66'});
+      if (ct.hp <= 0) containerBoom(ct);
+    }
     for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
     for (const tk of tanks) if (!tk.dead && segDist(tk.x, tk.y-20, ex, ey, beamEndX, beamEndY) < 34) {
       tk.hp -= 450*dt*LASER_DMG_MULT;
@@ -1351,12 +1381,31 @@ function update(dt) {
     }
     for (const a of maeves) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
       if (maeveBraced(a)) {
-        // the beam just glances off her like a mirror — bright deflected sparks, zero damage
+        // real mirror physics: the beam's incoming angle reflects across her shield like it would
+        // off a flat vertical mirror, and the reflected beam is a genuine second raycast — it can
+        // cut buildings, fodder and cars, not just throw cosmetic sparks
+        const reflA = Math.PI - Math.atan2(uy, ux);
+        const rux = Math.cos(reflA), ruy = Math.sin(reflA);
+        const rex = a.x, rey = a.y - 20;
+        let rStop = 1000, rHitB = null, rHitI = -1;
+        for (let d = 20; d < rStop; d += 9) {
+          const px = rex + rux*d, py = rey + ruy*d;
+          const b = cellIntactAt(px, py);
+          if (b) { rStop = d; rHitB = b; rHitI = cellIdx(b, px, py); break; }
+        }
+        const rEndX = rex + rux*rStop, rEndY = rey + ruy*rStop;
+        if (rHitB && rHitI >= 0) {
+          rHitB.cells[rHitI] += dt * LASER_CELL_RATE;
+          if (rHitB.cells[rHitI] >= 1) { rHitB.cells[rHitI] = 0.999; destroyCell(rHitB, rHitI, rEndX, rEndY); }
+        }
+        for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, rex, rey, rEndX, rEndY) < 16) { g.dead = true; gibBurst(g.x, g.y-16, 1); addKill(); }
+        for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, rex, rey, rEndX, rEndY) < 14) { c.dead = true; gibBurst(c.x, c.y-14, 1); addKill(); }
+        for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, rex, rey, rEndX, rEndY) < 20) carBoom(car);
+        mirrorBeam = { x1: rex, y1: rey, x2: rEndX, y2: rEndY };
         if (Math.random() < 0.7) {
-          const reflAngle = Math.PI - Math.atan2(uy, ux) + rand(-0.35, 0.35);
           for (let i=0;i<3;i++) {
-            const sp = rand(300, 700);
-            sparks.push({ x: a.x, y: a.y-20, vx: Math.cos(reflAngle)*sp, vy: Math.sin(reflAngle)*sp,
+            const sp = rand(300, 700), sa = reflA + rand(-0.35, 0.35);
+            sparks.push({ x: a.x, y: a.y-20, vx: Math.cos(sa)*sp, vy: Math.sin(sa)*sp,
               life: rand(0.15,0.3), c: '#f2f6ff' });
           }
         }
@@ -1496,6 +1545,7 @@ function update(dt) {
   for (const s of supes) {
     if (s.hp <= 0) continue;
     s.t -= dt; s.smokeT -= dt; s.flash -= dt;
+    if (s.launchedT > 0) s.launchedT -= dt;
     if (s.smokeT > 0 && Math.random()<0.5)
       sparks.push({x:s.x+rand(-10,10), y:s.y+rand(-14,14), vx:rand(-30,30), vy:rand(-80,-20), life:rand(0.3,0.7), c:'#555560'});
     const dx = P.x - s.x, dy = P.y - s.y, d = Math.hypot(dx,dy) || 1;
@@ -1656,6 +1706,10 @@ function update(dt) {
   // ── dock containers: gravity-settle onto the stack (or dock) below, crush on landing ──
   for (const ct of containers) {
     if (ct.dead) continue;
+    if (ct.vx) {
+      ct.x += ct.vx*dt; ct.vx -= ct.vx*3*dt;
+      ct.x = clamp(ct.x, CITY_W + 20, WATER_X - ct.w - 20);
+    }
     let restY = GROUND_Y - ct.h;
     for (const o of containers) {
       if (o === ct || o.dead) continue;
@@ -1767,7 +1821,7 @@ function update(dt) {
       }
       a.roofCd -= dt;
       if (a.roofCd <= 0) {
-        a.roofCd = rand(0.7, 1.6);   // checks in more often, so he's climbing/wall-running far more of the time
+        a.roofCd = rand(0.4, 0.9);   // checks in nearly twice as often — more restless, less content to sit on one surface
         // bias ground/rooftop/rail choice toward whichever surface is closer to the player's height —
         // he's trying to get to your altitude, not just coin-flipping — but generally favors rooftops.
         // the elevated rail only exists over the city, so it's only ever an option there.
@@ -1776,18 +1830,18 @@ function update(dt) {
         if (a.mode === 'ground') {
           const idx = findBuildingIndexAt(a.x);
           const roofDist = idx >= 0 ? Math.abs(P.y - fgBuildings[idx].roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
-          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.7) {
+          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.8) {
             startRailClimb(a, 'rail');   // up the nearest support pylon rather than teleporting onto the deck
-          } else if (idx >= 0 && Math.random() < (roofDist < groundDist ? 0.95 : 0.55)) { a.mode = 'roof'; a.buildingIdx = idx; }
+          } else if (idx >= 0 && Math.random() < (roofDist < groundDist ? 0.95 : 0.75)) { a.mode = 'roof'; a.buildingIdx = idx; }
         } else if (a.mode === 'roof') {
           const b = fgBuildings[a.buildingIdx];
           const roofDist = b ? Math.abs(P.y - b.roofY) : Infinity, groundDist = Math.abs(P.y - GROUND_Y);
-          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.5) {
+          if (railInPlay && railDist < roofDist && railDist < groundDist && Math.random() < 0.65) {
             a.mode = 'rail';   // hopping down from a rooftop onto the deck — still a leap, not a pole climb
-          } else if (Math.random() < (groundDist < roofDist ? 0.4 : 0.1)) { a.mode = 'ground'; a.buildingIdx = -1; }
+          } else if (Math.random() < (groundDist < roofDist ? 0.55 : 0.2)) { a.mode = 'ground'; a.buildingIdx = -1; }
         } else { // 'rail'
           const groundDist = Math.abs(P.y - GROUND_Y);
-          if (!railInPlay || (railDist > groundDist && Math.random() < 0.5)) { startRailClimb(a, 'ground'); }
+          if (!railInPlay || (railDist > groundDist && Math.random() < 0.65)) { startRailClimb(a, 'ground'); }
         }
       }
     }
@@ -2180,6 +2234,7 @@ function update(dt) {
     t.x += t.dir * t.sp * dt; t.t += dt;
     for (let i=0;i<t.cars.length;i++) {
       const c = t.cars[i]; if (c.dead) continue;
+      if (c.flash > 0) c.flash -= dt;
       const cxw = trainCarX(t, i);
       // plowing into a car (flying or dashing) wrecks it
       if (dist2(P.x, P.y, cxw, RAIL_Y-CAR_CENTER_OFF) < (66*TRAIN_SCALE)*(66*TRAIN_SCALE)) trainCarDeath(t, i, cxw);
@@ -2838,15 +2893,19 @@ function drawMaeve(a) {
   const legBend = jumping ? 6 : 0;
   cx.strokeStyle = '#15181c'; cx.lineWidth = 5;
   cx.beginPath(); cx.moveTo(0,-14); cx.lineTo(-5,-legBend); cx.moveTo(0,-14); cx.lineTo(6,-legBend); cx.stroke();
+  cx.fillStyle = '#c9ccd6'; cx.fillRect(-7,-9,4,3); cx.fillRect(3,-9,4,3);   // silver shin guards
   cx.fillStyle = '#7a0e12'; cx.fillRect(-6,-30,12,17);
   cx.fillStyle = '#e0231f'; cx.fillRect(-6,-30,12,6);
+  cx.fillStyle = '#c9ccd6'; cx.fillRect(-6,-15,12,2);   // silver belt
   // arms reaching forward while airborne going for the grab
   if (jumping) {
     cx.strokeStyle = '#7a0e12'; cx.lineWidth = 4.5;
     cx.beginPath(); cx.moveTo(5,-26); cx.lineTo(20,-30); cx.moveTo(-5,-26); cx.lineTo(-16,-22); cx.stroke();
+    cx.fillStyle = '#c9ccd6'; cx.fillRect(17,-31,4,3); cx.fillRect(-18,-24,4,3);   // silver vambraces
   }
   cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
   cx.fillStyle = '#2a1a14'; cx.beginPath(); cx.arc(0,-38,6,Math.PI,0); cx.fill();
+  cx.fillStyle = '#e8c23a'; cx.fillRect(-5.5,-40,11,1.6);   // gold circlet — she's Queen Maeve, after all
   cx.restore();
   const w = 60, hpFrac = clamp(a.hp/a.maxHp, 0, 1);
   cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-62, w, 7);
@@ -2888,15 +2947,18 @@ function drawDeep(dp) {
     cx.beginPath(); cx.moveTo(0,-14); cx.lineTo(-5,-legBend); cx.moveTo(0,-14); cx.lineTo(6,-legBend); cx.stroke();
     cx.fillStyle = '#114b40'; cx.fillRect(-6,-30,12,17);
     cx.fillStyle = '#2fbf9a'; cx.fillRect(-6,-30,12,5);
+    cx.fillStyle = '#c9a227'; cx.fillRect(-6,-16,12,2);   // gold waist trim
     cx.fillStyle = '#0d3a34';   // dorsal fin on his back
     cx.beginPath(); cx.moveTo(-6,-28); cx.lineTo(-14,-22); cx.lineTo(-6,-18); cx.closePath(); cx.fill();
+    cx.strokeStyle = '#c9a227'; cx.lineWidth = 1;   // gold trim along the fin edge
+    cx.beginPath(); cx.moveTo(-6,-28); cx.lineTo(-14,-22); cx.lineTo(-6,-18); cx.stroke();
     if (dp.state === 'jump' || dp.state === 'carry') {
       cx.strokeStyle = '#114b40'; cx.lineWidth = 4.5;
       cx.beginPath(); cx.moveTo(5,-26); cx.lineTo(20,-30); cx.moveTo(-5,-26); cx.lineTo(-15,-21); cx.stroke();
     }
     cx.fillStyle = '#cfa080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
     cx.fillStyle = '#5d4126'; cx.beginPath(); cx.arc(0,-37.5,5.8,Math.PI,0); cx.fill();
-    cx.strokeStyle = '#7a5a44'; cx.lineWidth = 1;   // gills
+    cx.strokeStyle = '#c9a227'; cx.lineWidth = 1;   // gills, picked out in gold
     cx.beginPath(); cx.moveTo(3,-33); cx.lineTo(3,-30); cx.moveTo(5,-33); cx.lineTo(5,-30.5); cx.stroke();
     cx.restore();
   }
@@ -2980,15 +3042,24 @@ function drawTrain(t) {
     cx.save(); cx.translate(cxw, cy); cx.scale(t.dir*TRAIN_SCALE, TRAIN_SCALE);
     cx.fillStyle = i % 2 === 0 ? '#5d2d33' : '#3d4a5d';             // cars alternate red/blue
     cx.fillRect(-52, -30, 104, 26);
+    cx.fillStyle = i % 2 === 0 ? '#c98a3a' : '#7ab0d6';              // livery stripe
+    cx.fillRect(-52, -14, 104, 3);
+    cx.strokeStyle = 'rgba(0,0,0,0.35)'; cx.lineWidth = 1;           // door seams
+    cx.beginPath(); cx.moveTo(-17, -30); cx.lineTo(-17, -4); cx.moveTo(17, -30); cx.lineTo(17, -4); cx.stroke();
     cx.fillStyle = 'rgba(255,205,110,0.8)';                          // lit windows + passengers
     for (let wx=-42; wx<44; wx+=17) {
       cx.fillRect(wx, -25, 11, 10);
       if ((wx+i*17) % 34 === 0) { cx.fillStyle='rgba(20,14,24,0.85)'; cx.fillRect(wx+3, -23, 5, 8); cx.fillStyle='rgba(255,205,110,0.8)'; }
     }
     cx.fillStyle = 'rgba(0,0,0,0.4)'; cx.fillRect(-52, -30, 104, 4);
+    cx.fillStyle = 'rgba(0,0,0,0.5)';                                // roof vents
+    for (let vx=-30; vx<40; vx+=24) cx.fillRect(vx, -31, 8, 2);
     cx.fillStyle = '#15121c';                                        // bogies
     cx.fillRect(-42, -5, 22, 6); cx.fillRect(20, -5, 22, 6);
+    cx.strokeStyle = '#0d0b12'; cx.lineWidth = 2;                    // coupling link to the car behind
+    cx.beginPath(); cx.moveTo(-52, -6); cx.lineTo(-60, -6); cx.stroke();
     if (i === 0) { cx.fillStyle = 'rgba(255,240,190,0.9)'; cx.fillRect(50, -20, 4, 7); }   // headlight
+    if (c.flash > 0) { cx.fillStyle = 'rgba(255,40,30,'+(clamp(c.flash/0.15,0,1)*0.55)+')'; cx.fillRect(-52, -30, 104, 26); }
     cx.restore();
     cx.globalAlpha = 1;
   }
@@ -3197,6 +3268,13 @@ function drawCar(car) {
   }
   cx.restore();
 }
+function drawSparkleStar(px, py, r, color) {
+  cx.fillStyle = color;
+  cx.beginPath();
+  cx.moveTo(px, py-r); cx.lineTo(px+r*0.28, py-r*0.28); cx.lineTo(px+r, py); cx.lineTo(px+r*0.28, py+r*0.28);
+  cx.lineTo(px, py+r); cx.lineTo(px-r*0.28, py+r*0.28); cx.lineTo(px-r, py); cx.lineTo(px-r*0.28, py-r*0.28);
+  cx.closePath(); cx.fill();
+}
 function drawSupe(s) {
   const x = s.x - camX, y = s.y - camY;
   if (x < -110 || x > VW+110) return;
@@ -3223,7 +3301,26 @@ function drawSupe(s) {
   else { cx.moveTo(5,-14); cx.lineTo(10,0); }
   cx.moveTo(-5,-14); cx.lineTo(-9,-2); cx.stroke();
   cx.fillStyle = '#d4a888'; cx.beginPath(); cx.arc(0, -24, 6.5, 0, 7); cx.fill();
-  cx.fillStyle = s.suit; cx.beginPath(); cx.arc(0, -26, 6.5, Math.PI*1.05, Math.PI*1.95); cx.fill();
+  if (s.boss) {
+    // long blonde hair trailing back, instead of the generic suit-colored cap regular capes get
+    cx.fillStyle = '#e8c468';
+    cx.beginPath();
+    cx.moveTo(-5.5, -29);
+    cx.quadraticCurveTo(-15 - Math.sin(gameT*4)*3, -13, -11 - Math.sin(gameT*3.4)*4, 13);
+    cx.quadraticCurveTo(-9, -8, -6, -22);
+    cx.closePath(); cx.fill();
+    cx.beginPath();
+    cx.moveTo(5.5, -29);
+    cx.quadraticCurveTo(12 - Math.sin(gameT*3.7)*3, -11, 8 - Math.sin(gameT*3.1)*4, 11);
+    cx.quadraticCurveTo(7, -9, 5.5, -22);
+    cx.closePath(); cx.fill();
+    cx.beginPath(); cx.arc(0, -28, 6.6, Math.PI*1.05, Math.PI*1.95); cx.fill();
+    cx.fillStyle = '#2a4a8a';   // eyes
+    cx.fillRect(-3.4, -25, 1.5, 1.7); cx.fillRect(1.1, -25, 1.5, 1.7);
+    drawSparkleStar(0, -10, 4.2, '#ffe14d');   // star emblem on the chest
+  } else {
+    cx.fillStyle = s.suit; cx.beginPath(); cx.arc(0, -26, 6.5, Math.PI*1.05, Math.PI*1.95); cx.fill();
+  }
   if (s.state==='windup') { cx.fillStyle = s.accent; cx.fillRect(1, -26, 4, 2); }
   if (!s.boss && s.hp < 65) { cx.fillStyle = 'rgba(20,20,20,0.5)'; cx.fillRect(-7, -18 + 26*(s.hp/100), 14, 26*(1-s.hp/100)); }
   cx.restore();
@@ -3371,6 +3468,20 @@ function drawLaser() {
   ig.addColorStop(0,'rgba(255,240,200,0.9)'); ig.addColorStop(0.4,'rgba(255,90,40,0.55)'); ig.addColorStop(1,'rgba(255,60,20,0)');
   cx.fillStyle = ig; cx.beginPath(); cx.arc(tx,ty,26*pulse,0,7); cx.fill();
   cx.restore();
+  // Maeve's mirror-reflected beam — cool silver-white instead of the beam's own red/orange, so it
+  // visibly reads as a deflection and not just more of the same laser
+  if (mirrorBeam) {
+    const mx1 = mirrorBeam.x1 - camX, my1 = mirrorBeam.y1 - camY, mx2 = mirrorBeam.x2 - camX, my2 = mirrorBeam.y2 - camY;
+    cx.save();
+    cx.globalCompositeOperation = 'lighter';
+    cx.strokeStyle = 'rgba(180,210,255,0.25)'; cx.lineWidth = 9*pulse;
+    cx.beginPath(); cx.moveTo(mx1, my1); cx.lineTo(mx2, my2); cx.stroke();
+    cx.strokeStyle = 'rgba(210,230,255,0.8)'; cx.lineWidth = 3.5*pulse;
+    cx.beginPath(); cx.moveTo(mx1, my1); cx.lineTo(mx2, my2); cx.stroke();
+    cx.strokeStyle = 'rgba(255,255,255,0.95)'; cx.lineWidth = 1.3;
+    cx.beginPath(); cx.moveTo(mx1, my1); cx.lineTo(mx2, my2); cx.stroke();
+    cx.restore();
+  }
 }
 function drawFx() {
   for (const g of debris) {
