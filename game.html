@@ -197,15 +197,18 @@ function hydrantBoom(p) {
 // ─── Dock containers: destructible stacked props — cuttable, dashable, topple and crush ───
 const containers = [];
 (function genDock(){
+  // palette pulled straight from the train's own livery (car red/blue + stripe gold) so the
+  // dock reads as the same city instead of a generic shipping-crate rainbow
+  const CONTAINER_COLORS = ['#5d2d33','#3d4a5d','#8a6a2f','#4a5568','#2f3a42'];
   let x = CITY_W + 140;
   while (x < WATER_X - 300) {
-    if (Math.random() < 0.8) {
-      const stack = randi(2, 5);
+    if (Math.random() < 0.92) {
+      const stack = randi(3, 7);
       for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
-        c: ['#8a3a2a','#2f6b8a','#3d7a46','#8a7a2f','#5d5d66'][randi(0,4)], dead: false, vy: 0, vx: 0,
-        hp: 140, maxHp: 140 });
+        c: CONTAINER_COLORS[randi(0,4)], dead: false, vy: 0, vx: 0,
+        hp: 280, maxHp: 280 });
       x += 122;
-    } else x += rand(50, 130);
+    } else x += rand(30, 70);
   }
 })();
 function containerBoom(ct) {
@@ -741,7 +744,7 @@ function spawnTrain() {
   const dir = Math.random()<0.5 ? -1 : 1;
   const n = 8;
   const cars = [];
-  for (let i=0;i<n;i++) cars.push({ hp: 190, dead: false });
+  for (let i=0;i<n;i++) cars.push({ hp: 165, dead: false });
   trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
 }
 function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
