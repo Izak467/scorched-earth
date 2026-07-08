@@ -104,8 +104,10 @@ function splash(x, mag) {
   if (mag > 300) thump(70, 0.25, 0.2);
 }
 function waterBlood(x, y, r) {
+  // lives much longer than a land blood pool — the whole hold-then-fade curve in the draw loop
+  // scales off this duration, so stretching it out slows the actual fade, not just the timer
   waterBloods.push({ x, y: Math.max(y, GROUND_Y+8), r, vr: rand(3,7),
-    vx: rand(-9,9), vy: rand(3,10), life: rand(35,50), maxLife: 42 });
+    vx: rand(-9,9), vy: rand(3,10), life: rand(85,120), maxLife: 100 });
 }
 function bubbleAt(x, y) {
   bubbles.push({ x, y, vy: -rand(35,85), vx: rand(-10,10), r: rand(1.2,3), life: rand(0.6,1.6) });
@@ -133,9 +135,6 @@ const fgBuildings = [];
     fgBuildings.push({x, w, h, cols, rows, roofY: GROUND_Y-h, shade: randi(0,2), wins, cells,
       destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
       ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07,
-      // sparse rooftop landmarks — low odds each so the skyline doesn't get busy, and a billboard
-      // stays lit until you actually shoot it out, a distinct "I did that" moment from a distance
-      billboard: (w > 260 && Math.random()<0.1) ? { lit: true } : null,
       watertower: w > 200 && Math.random()<0.08, archetype});
     x += w + rand(180, 460);
   }
@@ -764,10 +763,10 @@ function trainCarDeath(t, i, cxw) {
     vx: t.dir*t.sp*0.3+rand(-120,120), vy: rand(-160,-20), rot: rand(0,7), vr: rand(-6,6),
     r: rand(8,16)*TRAIN_SCALE*0.5, c: wreckColors[randi(0,3)], life: rand(2.5,4), heavy: true });
   gibBurst(cxw, RAIL_Y-CAR_CENTER_OFF, 1.1, false, t.dir*t.sp*0.3, -80);
-  // one clean mark on the street below where the wreckage came down — used to bake one per
-  // debris chunk, which stacked into a solid black blotch that never faded when several chunks
-  // (or several cars, chained) landed near the same spot
-  bakeScorch(cxw, GROUND_Y, 26);
+  // transient, not baked — used to bake one per debris chunk, which stacked into a solid black
+  // blotch that never faded when several chunks (or several cars, chained) landed near the same
+  // spot; even one clean permanent mark per car adds up over a long session of trains dying
+  flashScorch(cxw, GROUND_Y, 26);
   shake(12); sfxBoom(); freezeT = Math.max(freezeT, 0.05);
   // a car left standing alone with no live neighbor on either side isn't attached to anything
   // anymore — it goes too, and this can chain down the whole rest of the train
@@ -790,7 +789,9 @@ function tankDeath(tk) {
   tk.dead = true;
   addKill(); addDamage(4e6);
   explode(tk.x, tk.y-16*TANK_SCALE, 85, 0.5, false, 0.9);
-  bakeScorch(tk.x, GROUND_Y, 46);
+  // transient, not baked — tanks spawn often enough now that a permanent mark per kill stacked
+  // into a solid black blotch on any street the player kept fighting in
+  flashScorch(tk.x, GROUND_Y, 46);
   for (let k=0;k<6;k++) debris.push({ x: tk.x+rand(-20,20)*TANK_SCALE, y: tk.y-16*TANK_SCALE, vx: rand(-220,220), vy: rand(-320,-80),
     rot: rand(0,7), vr: rand(-6,6), r: rand(4,9), c: '#2c352f', life: rand(1.5,3), heavy: true });
   shake(14); freezeT = Math.max(freezeT, 0.05);
@@ -1353,12 +1354,18 @@ function update(dt) {
       }
     }
     // same story as the train: a jet checked only against the (possibly already-clipped) beam end
-    // could sit closer than whatever the beam stopped on and still never register a hit
+    // could sit closer than whatever the beam stopped on and still never register a hit. the jet's
+    // sprite is a long, low fuselage+wings shape, not a disc, so a circular radius left the nose,
+    // tail and wingtips un-blockable while the center registered fine — use an elliptical footprint
+    // that actually matches the drawn silhouette instead
     let hitJet = null;
+    const JET_RX = 78*JET_SCALE, JET_RY = 30*JET_SCALE;
     for (const j of jets) {
       if (j.dead) continue;
       const t = clamp((j.x-ex)*ux + (j.y-ey)*uy, 0, tlen);
-      if (t < stopD && Math.hypot(ex+ux*t - j.x, ey+uy*t - j.y) < 40*JET_SCALE) {
+      if (t >= stopD) continue;
+      const dx = ex+ux*t - j.x, dy = ey+uy*t - j.y;
+      if ((dx*dx)/(JET_RX*JET_RX) + (dy*dy)/(JET_RY*JET_RY) <= 1) {
         stopD = t; hitJet = j; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null;
       }
     }
@@ -1370,6 +1377,55 @@ function update(dt) {
       const t = clamp((s.x-ex)*ux + (s.y-ey)*uy, 0, tlen);
       if (t < stopD && Math.hypot(ex+ux*t - s.x, ey+uy*t - s.y) < 20*SHARK_SCALE) {
         stopD = t; hitShark = s; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null;
+      }
+    }
+    // everything below used to only be checked with segDist against the beam's already-clipped
+    // endpoint (a post-hoc "did the beam happen to pass near this" test), which meant none of it
+    // actually stopped the beam — containers and tanks visibly had the laser cut straight through
+    // their hull to whatever was behind them. same priority-blocking treatment as everything above.
+    let hitContainer = null;
+    for (const ct of containers) {
+      if (ct.dead) continue;
+      const cx2 = ct.x+ct.w/2, cy2 = ct.y+ct.h/2;
+      const t = clamp((cx2-ex)*ux + (cy2-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - cx2, ey+uy*t - cy2) < 56) {
+        stopD = t; hitContainer = ct; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null;
+      }
+    }
+    let hitTank = null;
+    for (const tk of tanks) {
+      if (tk.dead) continue;
+      const tky = tk.y-20*TANK_SCALE;
+      const t = clamp((tk.x-ex)*ux + (tky-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - tk.x, ey+uy*t - tky) < 34*TANK_SCALE) {
+        stopD = t; hitTank = tk; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null; hitContainer = null;
+      }
+    }
+    let hitATrain = null;
+    for (const a of atrains) {
+      if (a.dead) continue;
+      const ay = a.y-20;
+      const t = clamp((a.x-ex)*ux + (ay-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - a.x, ey+uy*t - ay) < 20) {
+        stopD = t; hitATrain = a; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null; hitContainer = null; hitTank = null;
+      }
+    }
+    let hitMaeve = null;
+    for (const a of maeves) {
+      if (a.dead) continue;
+      const ay = a.y-20;
+      const t = clamp((a.x-ex)*ux + (ay-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - a.x, ey+uy*t - ay) < 20) {
+        stopD = t; hitMaeve = a; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null; hitContainer = null; hitTank = null; hitATrain = null;
+      }
+    }
+    let hitDeep = null;
+    for (const dp of deeps) {
+      if (dp.dead) continue;
+      const dy = dp.y-12;
+      const t = clamp((dp.x-ex)*ux + (dy-ey)*uy, 0, tlen);
+      if (t < stopD && Math.hypot(ex+ux*t - dp.x, ey+uy*t - dy) < 24) {
+        stopD = t; hitDeep = dp; hitHeli = null; hitSupe = null; hitB = null; hitTrain = null; hitJet = null; hitShark = null; hitContainer = null; hitTank = null; hitATrain = null; hitMaeve = null;
       }
     }
     beamEndX = ex + ux*stopD; beamEndY = ey + uy*stopD;
@@ -1407,64 +1463,33 @@ function update(dt) {
       s.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.6) bubbleAt(s.x+rand(-10,10), s.y-rand(0,10));
       if (s.hp <= 0) sharkDeath(s);
-    }
-    // fodder caught anywhere along the (possibly shortened) beam still melts
-    for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, ex, ey, beamEndX, beamEndY) < 16) {
-      g.dead = true; gibBurst(g.x, g.y-16, 1); addKill();
-    }
-    for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, ex, ey, beamEndX, beamEndY) < 14) {
-      c.dead = true; gibBurst(c.x, c.y-14, 1); addKill();
-    }
-    for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, ex, ey, beamEndX, beamEndY) < 20) carBoom(car);
-    // a lit billboard goes dark the instant the beam clips it — a landmark you can pick off from
-    // a distance, separate from the building's own cell-by-cell damage
-    for (const b of fgBuildings) if (b.billboard && b.billboard.lit && !b.collapsed && !b.collapsing) {
-      const bbx = b.x + b.w*0.35, bby = b.roofY - 64;
-      if (segDist(bbx, bby, ex, ey, beamEndX, beamEndY) < 30) {
-        b.billboard.lit = false;
-        for (let i=0;i<6;i++) sparks.push({x:bbx+rand(-15,15), y:bby+rand(-10,10), vx:rand(-100,100), vy:rand(-140,-20), life:rand(0.15,0.35), c:'#ffdd66'});
-        sfxCrack();
-      }
-    }
-    for (const p of streetProps) if (!p.dead) {
-      if (p.type === 'light' && segDist(p.x, GROUND_Y-118, ex, ey, beamEndX, beamEndY) < 12) streetLightBoom(p);
-      else if (p.type === 'hydrant' && p.geyserT <= 0 && segDist(p.x, GROUND_Y-10, ex, ey, beamEndX, beamEndY) < 14) hydrantBoom(p);
-    }
-    for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
-      r.gone = true; explode(r.x, r.y, 46, 0, true);
-    }
-    for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
-      f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
-    }
-    // takes real sustained damage now instead of popping on first touch, but the beam still shoves
-    // it around like it's empty and light the whole time it's being cut into
-    for (const ct of containers) if (!ct.dead && segDist(ct.x+ct.w/2, ct.y+ct.h/2, ex, ey, beamEndX, beamEndY) < 56) {
+    } else if (hitContainer) {
+      const ct = hitContainer;
       ct.hp -= 450*dt*LASER_DMG_MULT;
       ct.vx += ux*260*dt;
-      if (Math.random()<0.4) sparks.push({x:ct.x+ct.w/2+rand(-10,10),y:ct.y+ct.h/2+rand(-8,8),vx:rand(-100,100),vy:rand(-120,20),life:rand(0.12,0.3),c:'#ffdd66'});
+      if (Math.random()<0.4) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-100,100),vy:rand(-120,20),life:rand(0.12,0.3),c:'#ffdd66'});
       if (ct.hp <= 0) containerBoom(ct);
-    }
-    for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
-    for (const tk of tanks) if (!tk.dead && segDist(tk.x, tk.y-20*TANK_SCALE, ex, ey, beamEndX, beamEndY) < 34*TANK_SCALE) {
+    } else if (hitTank) {
+      const tk = hitTank;
       tk.hp -= 450*dt*LASER_DMG_MULT;
-      if (Math.random()<0.6) sparks.push({x:tk.x+rand(-16,16),y:tk.y-20*TANK_SCALE,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
+      if (Math.random()<0.6) sparks.push({x:beamEndX+rand(-16,16),y:beamEndY,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
       if (tk.hp <= 0) tankDeath(tk);
-    }
-    for (const a of atrains) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
+    } else if (hitATrain) {
+      const a = hitATrain;
       a.hp -= 380*dt*LASER_DMG_MULT;
       a.laserHitT += dt; a.hitFlag = true;
       if (a.laserHitT > 1) a.fleeing = true;   // held on him too long — he bolts off-screen
-      if (Math.random()<0.5) sparks.push({x:a.x,y:a.y-20,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+      if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
       if (a.hp <= 0) atrainDeath(a);
-    }
-    for (const a of maeves) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
+    } else if (hitMaeve) {
+      const a = hitMaeve;
       if (maeveBraced(a)) {
-        // real mirror physics: the beam's incoming angle reflects across her shield like it would
-        // off a flat vertical mirror, and the reflected beam is a genuine second raycast — it can
-        // cut buildings, fodder and cars, not just throw cosmetic sparks
+        // real mirror physics: reflect off the point where the primary beam actually stopped (her
+        // shield now genuinely blocks it, instead of a synthetic point) — the reflected beam is a
+        // real second raycast, cutting buildings, fodder and cars, not just throwing cosmetic sparks
         const reflA = Math.PI - Math.atan2(uy, ux);
         const rux = Math.cos(reflA), ruy = Math.sin(reflA);
-        const rex = a.x, rey = a.y - 20;
+        const rex = beamEndX, rey = beamEndY;
         let rStop = 1000, rHitB = null, rHitI = -1;
         for (let d = 20; d < rStop; d += 9) {
           const px = rex + rux*d, py = rey + ruy*d;
@@ -1489,7 +1514,7 @@ function update(dt) {
         }
       } else {
         a.hp -= 380*dt*LASER_DMG_MULT;
-        if (Math.random()<0.5) sparks.push({x:a.x,y:a.y-20,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+        if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
         // held the beam on her long enough — she throws the shield up in reaction instead of just
         // standing there and taking it, rather than only ever bracing on her own fixed timer
         a.laserHitT += dt; a.hitFlag = true;
@@ -1498,13 +1523,35 @@ function update(dt) {
         }
         if (a.hp <= 0) maeveDeath(a);
       }
-    }
-    for (const dp of deeps) if (!dp.dead && segDist(dp.x, dp.y-12, ex, ey, beamEndX, beamEndY) < 24) {
+    } else if (hitDeep) {
+      const dp = hitDeep;
       dp.hp -= 380*dt*LASER_DMG_MULT*deepDamageMult(dp);
       if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
-      else if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+      else if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
       if (dp.hp <= 0) deepDeath(dp);
     }
+    // fodder caught anywhere along the (possibly shortened) beam still melts
+    for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, ex, ey, beamEndX, beamEndY) < 16) {
+      g.dead = true; gibBurst(g.x, g.y-16, 1); addKill();
+    }
+    for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, ex, ey, beamEndX, beamEndY) < 14) {
+      c.dead = true; gibBurst(c.x, c.y-14, 1); addKill();
+    }
+    for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, ex, ey, beamEndX, beamEndY) < 20) carBoom(car);
+    for (const p of streetProps) if (!p.dead) {
+      if (p.type === 'light' && segDist(p.x, GROUND_Y-118, ex, ey, beamEndX, beamEndY) < 12) streetLightBoom(p);
+      else if (p.type === 'hydrant' && p.geyserT <= 0 && segDist(p.x, GROUND_Y-10, ex, ey, beamEndX, beamEndY) < 14) hydrantBoom(p);
+    }
+    for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
+      r.gone = true; explode(r.x, r.y, 46, 0, true);
+    }
+    for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
+      f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
+    }
+    // containers/tanks/atrains/maeves/deep are now resolved up in the priority-blocking raycast
+    // above (they stop the beam like buildings/supes/etc do) — only true fodder still gets a
+    // post-hoc segDist check against whatever the beam actually reached
+    for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
     if (Math.random() < 0.8) sparks.push({ x: beamEndX+rand(-4,4), y: beamEndY+rand(-4,4),
       vx: rand(-160,160), vy: rand(-200,40), life: rand(0.1,0.35), c: Math.random()<0.5?'#ffdd66':'#ff5533' });
     // beam crossing the water surface boils it — steam burst at the crossing, bubbles below
@@ -1739,7 +1786,7 @@ function update(dt) {
       h.smokeCd -= dt;
       if (h.smokeCd <= 0) { h.smokeCd = 0.05; smokes.push({x:h.x, y:h.y, r:rand(8,16), vr:rand(20,40), vy:rand(-30,0), life:rand(0.5,0.9), c:'rgba(96,90,100,'}); }
       const s = surfaceBelow(h.x, h.y - 40);
-      if (h.y >= s - 20) { h.gone = true; explode(h.x, s-10, 95, 0.8); flashScorch(h.x, s, 60); bakeScorch(h.x, s, 40); freezeT = Math.max(freezeT, 0.05); }
+      if (h.y >= s - 20) { h.gone = true; explode(h.x, s-10, 95, 0.8); flashScorch(h.x, s, 60); freezeT = Math.max(freezeT, 0.05); }
       continue;
     }
     const want = P.x + (h.x > P.x ? h.holdDist : -h.holdDist);
@@ -2758,20 +2805,6 @@ function drawCity() {
       cx.fillRect(wtx-17, y-42, 34, 17);
       cx.beginPath(); cx.ellipse(wtx, y-42, 17, 8, 0, 0, 7); cx.fill();
     }
-    if (b.billboard) {
-      const bbx = x + b.w*0.35, bby = y - 44;
-      cx.strokeStyle = '#161320'; cx.lineWidth = 3;
-      cx.beginPath(); cx.moveTo(bbx-24, y); cx.lineTo(bbx-20, bby+16); cx.moveTo(bbx+24, y); cx.lineTo(bbx+20, bby+16); cx.stroke();
-      cx.fillStyle = '#101018'; cx.fillRect(bbx-38, bby, 76, 40);
-      if (b.billboard.lit) {
-        cx.fillStyle = 'rgba(255,220,120,0.9)'; cx.fillRect(bbx-34, bby+4, 68, 32);
-        cx.fillStyle = 'rgba(255,60,90,0.85)'; cx.fillRect(bbx-30, bby+8, 26, 10);
-        cx.fillStyle = 'rgba(60,180,255,0.85)'; cx.fillRect(bbx+2, bby+22, 30, 10);
-      } else {
-        cx.strokeStyle = 'rgba(255,255,255,0.15)'; cx.lineWidth = 1;
-        cx.beginPath(); cx.moveTo(bbx-38,bby); cx.lineTo(bbx+38,bby+40); cx.moveTo(bbx+38,bby); cx.lineTo(bbx-38,bby+40); cx.stroke();
-      }
-    }
     if (b.burning) {
       const fl = 0.6 + 0.4*Math.abs(Math.sin(gameT*9 + b.rubbleSeed*30));
       const fx = x + b.w*0.5;
@@ -3115,24 +3148,24 @@ function drawTrain(t) {
     cx.globalAlpha = alpha;
     cx.save(); cx.translate(cxw, cy); cx.scale(t.dir*TRAIN_SCALE, TRAIN_SCALE);
     cx.fillStyle = i % 2 === 0 ? '#5d2d33' : '#3d4a5d';             // cars alternate red/blue
-    cx.fillRect(-52, -30, 104, 26);
+    cx.fillRect(-52, -44, 104, 40);
     cx.fillStyle = i % 2 === 0 ? '#c98a3a' : '#7ab0d6';              // livery stripe
-    cx.fillRect(-52, -14, 104, 3);
+    cx.fillRect(-52, -18, 104, 3);
     cx.strokeStyle = 'rgba(0,0,0,0.35)'; cx.lineWidth = 1;           // door seams
-    cx.beginPath(); cx.moveTo(-17, -30); cx.lineTo(-17, -4); cx.moveTo(17, -30); cx.lineTo(17, -4); cx.stroke();
+    cx.beginPath(); cx.moveTo(-17, -44); cx.lineTo(-17, -4); cx.moveTo(17, -44); cx.lineTo(17, -4); cx.stroke();
     cx.fillStyle = 'rgba(255,205,110,0.8)';                          // lit windows + passengers
     for (let wx=-42; wx<44; wx+=17) {
-      cx.fillRect(wx, -25, 11, 10);
-      if ((wx+i*17) % 34 === 0) { cx.fillStyle='rgba(20,14,24,0.85)'; cx.fillRect(wx+3, -23, 5, 8); cx.fillStyle='rgba(255,205,110,0.8)'; }
+      cx.fillRect(wx, -37, 11, 14);
+      if ((wx+i*17) % 34 === 0) { cx.fillStyle='rgba(20,14,24,0.85)'; cx.fillRect(wx+3, -35, 5, 11); cx.fillStyle='rgba(255,205,110,0.8)'; }
     }
-    cx.fillStyle = 'rgba(0,0,0,0.4)'; cx.fillRect(-52, -30, 104, 4);
+    cx.fillStyle = 'rgba(0,0,0,0.4)'; cx.fillRect(-52, -44, 104, 4);
     cx.fillStyle = 'rgba(0,0,0,0.5)';                                // roof vents
-    for (let vx=-30; vx<40; vx+=24) cx.fillRect(vx, -31, 8, 2);
+    for (let vx=-30; vx<40; vx+=24) cx.fillRect(vx, -45, 8, 2);
     cx.fillStyle = '#15121c';                                        // bogies
     cx.fillRect(-42, -5, 22, 6); cx.fillRect(20, -5, 22, 6);
     cx.strokeStyle = '#0d0b12'; cx.lineWidth = 2;                    // coupling link to the car behind
     cx.beginPath(); cx.moveTo(-52, -6); cx.lineTo(-60, -6); cx.stroke();
-    if (i === 0) { cx.fillStyle = 'rgba(255,240,190,0.9)'; cx.fillRect(50, -20, 4, 7); }   // headlight
+    if (i === 0) { cx.fillStyle = 'rgba(255,240,190,0.9)'; cx.fillRect(50, -24, 4, 7); }   // headlight
     cx.restore();
     cx.globalAlpha = 1;
   }
