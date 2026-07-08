@@ -452,8 +452,8 @@ function thunderclap() {
     a.hp -= 90;
     if (a.hp<=0) maeveDeath(a);
   }
-  for (const dp of deeps) if (!dp.dead && !inWater(dp.x,dp.y) && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
-    dp.hp -= 90;
+  for (const dp of deeps) if (!dp.dead && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
+    dp.hp -= inWater(dp.x,dp.y) ? 90*(1-DEEP_WATER_RESIST) : 90;
     if (dp.hp<=0) deepDeath(dp);
   }
   for (const tk of tanks) if (!tk.dead && dist2(tk.x,tk.y-20,P.x,P.y) < R*R) {
@@ -635,6 +635,7 @@ function maeveDeath(a) {
 // The Deep: water boss. Lurks under the surface with only a fin showing, breach-lunges at you
 // over the water, grabs you if you linger underwater 3s+, and mixes in a surface dolphin charge,
 // leaping-fish volleys, and tentacle grabs that punish hovering low over the waves.
+const DEEP_WATER_RESIST = 0.88;   // damage taken while submerged is cut by this much, not zeroed out
 function spawnDeep() {
   deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
     hp: 1200, maxHp: 1200, state: 'lurk', stateT: rand(1,2), facing: -1, dead: false,
@@ -994,8 +995,8 @@ function update(dt) {
       rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
       if (a.hp<=0) maeveDeath(a);
     }
-    for (const dp of deeps) if (!dp.dead && !inWater(dp.x,dp.y) && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
-      dp.hp -= 260;
+    for (const dp of deeps) if (!dp.dead && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
+      dp.hp -= inWater(dp.x,dp.y) ? 260*(1-DEEP_WATER_RESIST) : 260;
       rings.push({x:dp.x,y:dp.y-10,r:10,life:0.4,w:3});
       if (dp.hp<=0) deepDeath(dp);
     }
@@ -1294,8 +1295,10 @@ function update(dt) {
     }
     for (const dp of deeps) if (!dp.dead && segDist(dp.x, dp.y-12, ex, ey, beamEndX, beamEndY) < 24) {
       if (inWater(dp.x, dp.y)) {
-        // submerged and untouchable — the beam just sizzles off the water over him
+        // submerged — the water soaks up most of the beam, but he'll still cook slowly if you commit to it
+        dp.hp -= 380*dt*(1-DEEP_WATER_RESIST);
         if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16));
+        if (dp.hp <= 0) deepDeath(dp);
       } else {
         dp.hp -= 380*dt;
         if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
