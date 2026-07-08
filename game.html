@@ -461,7 +461,7 @@ function thunderclap() {
     if (a.hp<=0) maeveDeath(a);
   }
   for (const dp of deeps) if (!dp.dead && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
-    dp.hp -= inWater(dp.x,dp.y) ? 90*(1-DEEP_WATER_RESIST) : 90;
+    dp.hp -= 90*deepDamageMult(dp);
     if (dp.hp<=0) deepDeath(dp);
   }
   for (const tk of tanks) if (!tk.dead && dist2(tk.x,tk.y-20,P.x,P.y) < R*R) {
@@ -495,6 +495,11 @@ const TRAIN_SCALE = 1.6;         // cars were reading too small against the buil
 const CAR_SPACE = 118 * TRAIN_SCALE, CAR_HIT_R = 52 * TRAIN_SCALE, CAR_CENTER_OFF = 16 * TRAIN_SCALE;
 let boltLockout = 0;   // Starlight can't fire another electric bolt until this clears — prevents chain-stunning
 let shipRespawnT = 0, sailShip = null;   // the docked-ship respawn cycle: sink → 20s → new one sails in from the right
+// the ship's three pieces sit flush against each other with no gap — if the ship locks back in
+// with the player standing somewhere inside it, the per-piece push-out logic can't cleanly eject
+// them (pushing clear of one piece can just land them inside the next one over). Give it a grace
+// window where it's fully lasable but doesn't physically shove/trap the player at all.
+let shipGraceT = 0;
 
 function shake(m) { shakeMag = Math.min(24, shakeMag + m); }
 // boss kills are easy to lose in the chaos of a normal fight — make them unmistakable with a
@@ -632,7 +637,7 @@ function spawnMaeve() {
   maeves.push({ x, y: GROUND_Y, mode: 'ground', buildingIdx: -1, wanderX: x,
     hp: 1600, maxHp: 1600, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
     facing: 1, dead: false, atkCd: rand(1.5,2.4), jumpVx: 0, jumpVy: 0,
-    braceCd: rand(3,5), braceTele: 0 });
+    braceCd: rand(3,5), braceTele: 0, fleeing: false, fleeT: 0 });
 }
 function maeveBraced(a) { return a.state === 'brace' && a.braceTele <= 0; }
 function maeveDeath(a) {
@@ -646,11 +651,20 @@ function maeveDeath(a) {
 // The Deep: water boss. Lurks under the surface with only a fin showing, breach-lunges at you
 // over the water, grabs you if you linger underwater 3s+, and mixes in a surface dolphin charge,
 // leaping-fish volleys, and tentacle grabs that punish hovering low over the waves.
-const DEEP_WATER_RESIST = 0.88;   // damage taken while submerged is cut by this much, not zeroed out
+// two resistance tiers instead of one flat number: fully under the surface he's 8x tougher,
+// right at the surface (dolphin charge, breaching windups) he's 4x tougher, and fully exposed
+// (breaching clear of the water, or on the dock) it's full damage
+const DEEP_UNDER_MULT = 1/8, DEEP_SURFACE_MULT = 1/4;
+function deepDamageMult(dp) {
+  if (dp.x <= WATER_X) return 1;
+  if (dp.y > GROUND_Y + 20) return DEEP_UNDER_MULT;
+  if (dp.y > GROUND_Y - 20) return DEEP_SURFACE_MULT;
+  return 1;
+}
 function spawnDeep() {
   deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
     hp: 1200, maxHp: 1200, state: 'lurk', stateT: rand(1,2), facing: -1, dead: false,
-    atkCd: rand(1.6,2.6), tentCd: 5, jumpVx: 0, jumpVy: 0, chargeDir: 1 });
+    atkCd: rand(1.6,2.6), tentCd: 5, jumpVx: 0, jumpVy: 0, chargeDir: 1, fleeing: false, fleeT: 0 });
 }
 function deepDeath(dp) {
   if (dp.dead) return;
@@ -705,7 +719,7 @@ function tankDeath(tk) {
 // ─── Sharks: blood in the water draws fins; they hunt the swimmers you've panicked ───
 function spawnShark() {
   sharks.push({ x: clamp(P.x + rand(-800,800), WATER_X+200, WORLD_W-200), y: GROUND_Y+42,
-    vx: rand(-60,60), hp: 150, dead: false, t: rand(0,9), feedT: 14, facing: 1 });
+    vx: rand(-60,60), vy: 0, hp: 150, dead: false, t: rand(0,9), feedT: 14, facing: 1, biteCd: 0 });
 }
 function sharkDeath(s) {
   if (s.dead) return;
@@ -731,7 +745,10 @@ function rescueDown(r) {
 
 // ─── Destruction ───
 const CELL_COST = 2200;   // smaller cells, smaller price each
-const LASER_CELL_RATE = 16.5;   // fill-per-second on a cell the beam (or player) is drilling through
+// tunable combat balance knobs — bump/drop these, not the individual damage lines, to rebalance
+const LASER_DMG_MULT = 1.2;   // the beam hits 20% harder across every target, buildings included
+const DASH_DMG_MULT = 0.9;    // dash/punch-through damage dialed back 10% to compensate
+const LASER_CELL_RATE = 16.5 * LASER_DMG_MULT;   // fill-per-second on a cell the beam (or player) is drilling through
 const JET_SCALE = 2.3;
 function destroyCell(b, i, wx, wy, quiet) {
   if (b.cells[i] >= 1) return;
@@ -990,7 +1007,7 @@ function update(dt) {
     for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
     for (const car of cars) if (!car.dead && dist2(P.x,P.y,car.x,car.y-10) < 64*64) carBoom(car);
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
-      s.hp = s.boss ? s.hp - 380 : 0;
+      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT : 0;
       s.pressureT = 0;
       s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
@@ -998,7 +1015,7 @@ function update(dt) {
     }
     for (const h of helis) if (!h.dead && dist2(P.x,P.y,h.x,h.y) < 105*105) heliDeath(h);
     for (const a of atrains) if (!a.dead && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
-      a.hp -= 260;
+      a.hp -= 260*DASH_DMG_MULT;
       rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
       if (a.hp<=0) atrainDeath(a);
     }
@@ -1010,19 +1027,19 @@ function update(dt) {
         for (let i=0;i<10;i++) sparks.push({x:a.x,y:a.y-16,vx:rand(-160,160),vy:rand(-200,-20),life:rand(0.15,0.35),c:'#e0e8ff'});
         shake(8); sfxCrack();
       } else {
-        a.hp -= 260;
+        a.hp -= 260*DASH_DMG_MULT;
         rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
         if (a.hp<=0) maeveDeath(a);
       }
     }
     for (const dp of deeps) if (!dp.dead && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
-      dp.hp -= inWater(dp.x,dp.y) ? 260*(1-DEEP_WATER_RESIST) : 260;
+      dp.hp -= 260*DASH_DMG_MULT*deepDamageMult(dp);
       rings.push({x:dp.x,y:dp.y-10,r:10,life:0.4,w:3});
       if (dp.hp<=0) deepDeath(dp);
     }
     for (const ct of containers) if (!ct.dead && dist2(P.x,P.y,ct.x+ct.w/2,ct.y+ct.h/2) < 82*82) containerBoom(ct);
     for (const tk of tanks) if (!tk.dead && dist2(P.x,P.y,tk.x,tk.y-20) < 78*78) {
-      tk.hp -= 400;
+      tk.hp -= 400*DASH_DMG_MULT;
       rings.push({x:tk.x,y:tk.y-20,r:10,life:0.4,w:3});
       if (tk.hp <= 0) tankDeath(tk);
     }
@@ -1105,9 +1122,12 @@ function update(dt) {
   // The Deep watches for anyone lingering below the surface
   if (inWater(P.x, P.y) && P.y > GROUND_Y + 30) P.underwaterT += dt; else P.underwaterT = 0;
 
+  shipGraceT = Math.max(0, shipGraceT - dt);
   if (P.dashT <= 0) {
     const hitB = cellIntactAt(P.x, P.y);
-    if (hitB) {
+    if (hitB && hitB.ship && shipGraceT > 0) {
+      // freshly arrived and possibly with the player standing inside it — lasable, not solid, for a bit
+    } else if (hitB) {
       const leftD = P.x - hitB.x, rightD = hitB.x + hitB.w - P.x, topD = P.y - hitB.roofY;
       if (topD < 30) {
         const wasFalling = P.vy >= 0;
@@ -1231,7 +1251,7 @@ function update(dt) {
       }
     }
     beamEndX = ex + ux*stopD; beamEndY = ey + uy*stopD;
-    const DPS = 315;
+    const DPS = 315 * LASER_DMG_MULT;
     if (hitB && hitI >= 0) {
       hitB.cells[hitI] += dt * LASER_CELL_RATE;
       if (hitB.cells[hitI] >= 1) { hitB.cells[hitI] = 0.999; destroyCell(hitB, hitI, beamEndX, beamEndY); }
@@ -1244,17 +1264,17 @@ function update(dt) {
       if (s.hp <= 0) { gibBurst(s.x, s.y, 1.5, true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     } else if (hitHeli) {
       const h = hitHeli;
-      h.hp -= 450*dt; h.hurt = 0.1;
+      h.hp -= 450*dt*LASER_DMG_MULT; h.hurt = 0.1;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-6,6), y:beamEndY+rand(-6,6), vx:rand(-160,160), vy:rand(-180,20), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
       if (h.hp <= 0) heliDeath(h);
     } else if (hitTrain) {
       const c = hitTrain.tr.cars[hitTrain.i];
-      c.hp -= 450*dt;
+      c.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.6) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
       if (c.hp <= 0) trainCarDeath(hitTrain.tr, hitTrain.i, hitTrain.cxw);
     } else if (hitJet) {
       // same durability as a helicopter — the beam burns it down rather than instantly detonating it
-      hitJet.hp -= 450*dt;
+      hitJet.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-8,8), y:beamEndY+rand(-8,8), vx:rand(-160,160), vy:rand(-120,40), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffdd66':'#ff5533' });
       if (hitJet.hp <= 0) jetDeath(hitJet);
     }
@@ -1275,18 +1295,18 @@ function update(dt) {
     for (const ct of containers) if (!ct.dead && segDist(ct.x+ct.w/2, ct.y+ct.h/2, ex, ey, beamEndX, beamEndY) < 56) containerBoom(ct);
     for (const f of fishes) if (segDist(f.x, f.y, ex, ey, beamEndX, beamEndY) < 14) f.life = 0;
     for (const tk of tanks) if (!tk.dead && segDist(tk.x, tk.y-20, ex, ey, beamEndX, beamEndY) < 34) {
-      tk.hp -= 450*dt;
+      tk.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.6) sparks.push({x:tk.x+rand(-16,16),y:tk.y-20,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffbb44'});
       if (tk.hp <= 0) tankDeath(tk);
     }
     for (const s of sharks) if (!s.dead && segDist(s.x, s.y, ex, ey, beamEndX, beamEndY) < 20) {
-      s.hp -= 450*dt;
+      s.hp -= 450*dt*LASER_DMG_MULT;
       if (Math.random()<0.6) bubbleAt(s.x+rand(-10,10), s.y-rand(0,10));
       if (s.hp <= 0) sharkDeath(s);
     }
     for (const r of rescues) if (!r.falling && !r.gone) {
       if (segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 38) {
-        r.hp -= 450*dt;
+        r.hp -= 450*dt*LASER_DMG_MULT;
         if (Math.random()<0.6) sparks.push({x:r.x+rand(-14,14),y:r.y+rand(-8,8),vx:rand(-140,140),vy:rand(-160,20),life:rand(0.12,0.3),c:'#ffdd66'});
         if (r.hp <= 0) rescueDown(r);
       } else if (r.cable > 24) {
@@ -1302,7 +1322,7 @@ function update(dt) {
       }
     }
     for (const a of atrains) if (!a.dead && segDist(a.x, a.y-20, ex, ey, beamEndX, beamEndY) < 20) {
-      a.hp -= 380*dt;
+      a.hp -= 380*dt*LASER_DMG_MULT;
       a.laserHitT += dt; a.hitFlag = true;
       if (a.laserHitT > 1) a.fleeing = true;   // held on him too long — he bolts off-screen
       if (Math.random()<0.5) sparks.push({x:a.x,y:a.y-20,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
@@ -1320,22 +1340,16 @@ function update(dt) {
           }
         }
       } else {
-        a.hp -= 380*dt;
+        a.hp -= 380*dt*LASER_DMG_MULT;
         if (Math.random()<0.5) sparks.push({x:a.x,y:a.y-20,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
         if (a.hp <= 0) maeveDeath(a);
       }
     }
     for (const dp of deeps) if (!dp.dead && segDist(dp.x, dp.y-12, ex, ey, beamEndX, beamEndY) < 24) {
-      if (inWater(dp.x, dp.y)) {
-        // submerged — the water soaks up most of the beam, but he'll still cook slowly if you commit to it
-        dp.hp -= 380*dt*(1-DEEP_WATER_RESIST);
-        if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16));
-        if (dp.hp <= 0) deepDeath(dp);
-      } else {
-        dp.hp -= 380*dt;
-        if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
-        if (dp.hp <= 0) deepDeath(dp);
-      }
+      dp.hp -= 380*dt*LASER_DMG_MULT*deepDamageMult(dp);
+      if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
+      else if (Math.random()<0.5) sparks.push({x:dp.x,y:dp.y-12,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+      if (dp.hp <= 0) deepDeath(dp);
     }
     if (Math.random() < 0.8) sparks.push({ x: beamEndX+rand(-4,4), y: beamEndY+rand(-4,4),
       vx: rand(-160,160), vy: rand(-200,40), life: rand(0.1,0.35), c: Math.random()<0.5?'#ffdd66':'#ff5533' });
@@ -1809,6 +1823,20 @@ function update(dt) {
   for (const a of maeves) {
     if (a.dead) continue;
 
+    // sniped from out past the shallows she can wade into — she can't ever close that gap, so
+    // rather than just standing at the waterline eating free damage forever she gives up and
+    // retreats into the city, off-screen, instead of being a stationary punching bag
+    if (firing && P.x > WATER_X + 260 + 300 && !a.fleeing) { a.fleeing = true; a.fleeT = 3; }
+    if (a.fleeing) {
+      a.x -= 2200*dt; a.facing = -1; a.fleeT -= dt;
+      if (a.fleeT <= 0 || Math.abs(a.x-P.x) > VW*1.15 || P.x < WATER_X - 100) {
+        a.fleeing = false; a.state = 'run'; a.stateT = rand(0.6,1.1); a.wanderX = a.x;
+      }
+      a.x = clamp(a.x, 40, WATER_X + 260);
+      a.y += clamp(GROUND_Y - 4 - a.y, -2600*dt, 2600*dt);
+      continue;
+    }
+
     if (a.state === 'jump') {
       // a lunge at the (led) target with mild in-flight tracking — she can't fly, so the trade for
       // her much longer reach is that she keeps steering toward you a little instead of committing
@@ -1919,6 +1947,19 @@ function update(dt) {
   for (const dp of deeps) {
     if (dp.dead) continue;
     dp.atkCd -= dt; dp.tentCd -= dt;
+
+    // sniped from deep in the city, well past even the dock he can chase you across — he can't
+    // ever close that gap, so he retreats into open water rather than sitting there taking it
+    if (firing && P.x < CITY_W - 250 && !dp.fleeing) { dp.fleeing = true; dp.fleeT = 3; }
+    if (dp.fleeing) {
+      dp.x += 1900*dt; dp.facing = 1; dp.fleeT -= dt;
+      if (dp.fleeT <= 0 || Math.abs(dp.x-P.x) > VW*1.15 || P.x > WATER_X + 100) {
+        dp.fleeing = false; dp.state = 'lurk';
+      }
+      dp.y += ((GROUND_Y + 55) - dp.y) * Math.min(1, dt*4);
+      dp.x = clamp(dp.x, WATER_X + 60, WORLD_W - 60);
+      continue;
+    }
 
     if (dp.state === 'lurk') {
       // he doesn't live on the dock — if an attack left him beached there, he scrambles straight
@@ -2031,7 +2072,7 @@ function update(dt) {
           P.vx += dp.chargeDir*2400; P.vy -= 350;
           P.hurtFlash = 1; shake(16); sfxHit(); thump(70,0.25,0.3);
           dp.state = 'lurk';
-        } else if (dp.x < WATER_X - 260 || dp.x > WORLD_W - 90 || Math.abs(dp.x - P.x) > 1400) {
+        } else if (dp.x < CITY_W || dp.x > WORLD_W - 90 || Math.abs(dp.x - P.x) > 1400) {
           dp.state = 'lurk';
         }
       }
@@ -2040,7 +2081,8 @@ function update(dt) {
     // land it — he's just not going to wander up there on his own the way he patrols the water
     const attacking = dp.state === 'crouch' || dp.state === 'jump' || dp.state === 'fall' ||
                        dp.state === 'dolphin' || dp.state === 'grabdash' || dp.state === 'carry';
-    dp.x = clamp(dp.x, attacking ? WATER_X - 260 : WATER_X + 60, WORLD_W - 60);
+    // the dock is his zone too, same as the shallows are Maeve's — he'll cross all of it mid-attack
+    dp.x = clamp(dp.x, attacking ? CITY_W : WATER_X + 60, WORLD_W - 60);
     dp.y = clamp(dp.y, 120, WATER_FLOOR - 40);
   }
   deeps = deeps.filter(d => !d.dead);
@@ -2100,7 +2142,7 @@ function update(dt) {
     if (Math.random() < dt*10) sparks.push({ x: sailShip.x - 20, y: GROUND_Y+2,
       vx: rand(20,80), vy: -rand(20,70), life: rand(0.2,0.4), c: '#cfe9f5' });
     if (sailShip.x <= SHIP_X) {
-      resetShip(); sailShip = null; shipRespawnT = 0;
+      resetShip(); sailShip = null; shipRespawnT = 0; shipGraceT = 2.5;
       thump(50, 1.4, 0.45);   // horn as she locks into the berth
     }
   }
@@ -2178,40 +2220,61 @@ function update(dt) {
   if (sharks.length < 3 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
   for (const s of sharks) {
     if (s.dead) continue;
-    s.t += dt; s.feedT -= dt;
-    let tx = null, best = 1e9;
-    for (const c of civs) if (!c.dead && c.swim && !c.rescued && !c.rescueFall) {
-      const d = Math.abs(c.x - s.x); if (d < best) { best = d; tx = c; }
-    }
-    if (tx && best < 900) {
-      const dart = best < 260;
-      if (dart) { tx.panic = 3; tx.dir = tx.x < s.x ? -1 : 1; }   // they see the fin coming
-      s.vx += Math.sign(tx.x - s.x) * (dart ? 900 : 220) * dt;
-      s.vx = clamp(s.vx, dart ? -520 : -180, dart ? 520 : 180);
-      if (best < 24) {
-        // a lighter kill than gibBurst on purpose — sharks can chain through several swimmers back
-        // to back, and gibBurst's full shake+thump stacking across every one of those made the
-        // screen feel like it never stopped rumbling, even for kills you never actually saw happen
-        tx.dead = true; addKill();
-        for (let i=0;i<7;i++) {
-          const ga = rand(0, Math.PI*2), sp = rand(60,200);
-          gibs.push({ x: tx.x, y: GROUND_Y+22, vx: Math.cos(ga)*sp, vy: Math.sin(ga)*sp-rand(40,120),
-            rot: rand(0,Math.PI*2), vr: rand(-9,9), r: rand(3,6), c: GIB_COLORS[randi(0,3)], life: rand(2,3) });
-        }
-        waterBlood(tx.x, GROUND_Y+16, rand(10,16));
-        splash(tx.x, 220); sfxSplat();
-        s.feedT = 16;
+    s.t += dt; s.feedT -= dt; s.biteCd -= dt;
+    // a submerged player is the priority target — they dive down and actually hunt you underwater
+    // instead of only ever gliding along at the surface after swimmers
+    const huntPlayer = inWater(P.x, P.y) && P.y > GROUND_Y + 20 && Math.abs(P.x - s.x) < 1000;
+    if (huntPlayer) {
+      const dx = P.x - s.x, dy = P.y - s.y, dd = Math.hypot(dx,dy) || 1;
+      const dart = dd < 320;
+      s.vx += (dx/dd) * (dart ? 900 : 260) * dt; s.vy += (dy/dd) * (dart ? 900 : 260) * dt;
+      s.vx = clamp(s.vx, dart ? -560 : -220, dart ? 560 : 220);
+      s.vy = clamp(s.vy, dart ? -560 : -220, dart ? 560 : 220);
+      s.y += s.vy*dt;
+      if (dd < 42 && s.biteCd <= 0) {
+        const kd = dd || 1;
+        P.vx += (P.x-s.x)/kd*420; P.vy += (P.y-s.y)/kd*420 - 60;
+        P.hurtFlash = 1; P.knockT = Math.max(P.knockT, 0.3); shake(10); sfxHit();
+        s.biteCd = 1.2; s.feedT = 16;
+        waterBlood(P.x, P.y, rand(8,14));   // now you're bleeding too — draws the rest of them in
       }
     } else {
-      let bx = null, bb = 1e9;
-      for (const w of waterBloods) { const d = Math.abs(w.x - s.x); if (d < bb) { bb = d; bx = w; } }
-      if (bx) s.vx += Math.sign(bx.x - s.x) * 160 * dt;
-      s.vx = clamp(s.vx, -160, 160);
+      let tx = null, best = 1e9;
+      for (const c of civs) if (!c.dead && c.swim && !c.rescued && !c.rescueFall) {
+        const d = Math.abs(c.x - s.x); if (d < best) { best = d; tx = c; }
+      }
+      if (tx && best < 900) {
+        const dart = best < 260;
+        if (dart) { tx.panic = 3; tx.dir = tx.x < s.x ? -1 : 1; }   // they see the fin coming
+        s.vx += Math.sign(tx.x - s.x) * (dart ? 900 : 220) * dt;
+        s.vx = clamp(s.vx, dart ? -520 : -180, dart ? 520 : 180);
+        if (best < 24) {
+          // a lighter kill than gibBurst on purpose — sharks can chain through several swimmers back
+          // to back, and gibBurst's full shake+thump stacking across every one of those made the
+          // screen feel like it never stopped rumbling, even for kills you never actually saw happen
+          tx.dead = true; addKill();
+          for (let i=0;i<7;i++) {
+            const ga = rand(0, Math.PI*2), sp = rand(60,200);
+            gibs.push({ x: tx.x, y: GROUND_Y+22, vx: Math.cos(ga)*sp, vy: Math.sin(ga)*sp-rand(40,120),
+              rot: rand(0,Math.PI*2), vr: rand(-9,9), r: rand(3,6), c: GIB_COLORS[randi(0,3)], life: rand(2,3) });
+          }
+          waterBlood(tx.x, GROUND_Y+16, rand(10,16));
+          splash(tx.x, 220); sfxSplat();
+          s.feedT = 16;
+        }
+      } else {
+        let bx = null, bb = 1e9;
+        for (const w of waterBloods) { const d = Math.abs(w.x - s.x); if (d < bb) { bb = d; bx = w; } }
+        if (bx) s.vx += Math.sign(bx.x - s.x) * 160 * dt;
+        s.vx = clamp(s.vx, -160, 160);
+      }
+      // settle back to a normal patrol depth just under the surface when not actively diving on you
+      s.y += ((GROUND_Y + 40 + Math.sin(s.t*1.4)*10) - s.y) * Math.min(1, dt*3);
     }
     s.x += s.vx*dt;
     s.facing = s.vx >= 0 ? 1 : -1;
-    s.y = GROUND_Y + 40 + Math.sin(s.t*1.4)*10;
     s.x = clamp(s.x, WATER_X+60, WORLD_W-60);
+    s.y = clamp(s.y, GROUND_Y+15, WATER_FLOOR-20);
     if (s.feedT <= 0) s.dead = true;   // nothing left to eat — slips back into the deep water
   }
   sharks = sharks.filter(s => !s.dead);
@@ -2303,6 +2366,7 @@ function update(dt) {
   // ── Starlight's electric bolts (stun on hit) ──
   for (const eb of electroBolts) {
     eb.x += eb.vx*dt; eb.y += eb.vy*dt; eb.life -= dt;
+    if (inWater(eb.x, eb.y) && Math.random() < dt*40) bubbleAt(eb.x, eb.y);   // a visible trail underwater — the bolt used to just seem to vanish at the surface
     if (dist2(eb.x,eb.y,P.x,P.y) < 32*32) {
       eb.life = 0; P.stunT = 2; boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
       for (let i=0;i<10;i++) sparks.push({x:eb.x,y:eb.y,vx:rand(-160,160),vy:rand(-160,160),life:rand(0.2,0.4),c:'#fff35a'});
@@ -3024,16 +3088,28 @@ function drawShark(s) {
   const x = s.x - camX, y = s.y - camY;
   if (x < -60 || x > VW+60) return;
   const fy = GROUND_Y - camY;
-  // body gliding under, grey fin above
-  cx.fillStyle = 'rgba(70,84,94,0.55)';
+  // a faint always-on glow so a shark diving on you doesn't just vanish into the dark water —
+  // matches the treatment every boss got for the same reason
+  cx.fillStyle = 'rgba(210,225,235,0.18)';
+  cx.beginPath(); cx.arc(x, y, 30, 0, 7); cx.fill();
+  // body gliding under, brighter belly highlight for contrast against the dark water
+  cx.fillStyle = 'rgba(120,140,152,0.85)';
   cx.beginPath(); cx.ellipse(x, y, 24, 8, 0, 0, 7); cx.fill();
-  cx.beginPath(); cx.moveTo(x - s.facing*22, y); cx.lineTo(x - s.facing*34, y-5); cx.lineTo(x - s.facing*32, y+4); cx.closePath(); cx.fill();
-  cx.fillStyle = '#4a5761';
-  cx.beginPath(); cx.moveTo(x - 9*s.facing, fy+1);
-  cx.quadraticCurveTo(x, fy - 13, x + 7*s.facing, fy+1);
-  cx.closePath(); cx.fill();
-  cx.strokeStyle = 'rgba(200,235,250,0.35)'; cx.lineWidth = 1.2;
-  cx.beginPath(); cx.moveTo(x - s.facing*10, fy+1); cx.lineTo(x - s.facing*26, fy+1); cx.stroke();
+  cx.fillStyle = 'rgba(210,222,228,0.55)';
+  cx.beginPath(); cx.ellipse(x, y+3, 18, 4, 0, 0, 7); cx.fill();
+  cx.fillStyle = 'rgba(120,140,152,0.9)';
+  cx.beginPath(); cx.moveTo(x - s.facing*22, y); cx.lineTo(x - s.facing*36, y-6); cx.lineTo(x - s.facing*33, y+4); cx.closePath(); cx.fill();
+  cx.strokeStyle = 'rgba(230,240,245,0.4)'; cx.lineWidth = 1;
+  cx.beginPath(); cx.ellipse(x, y, 24, 8, 0, 0, 7); cx.stroke();
+  // the dorsal fin only breaks the surface when he's actually up near it — not while diving on you
+  if (y - fy < 45) {
+    cx.fillStyle = '#6a7d89';
+    cx.beginPath(); cx.moveTo(x - 9*s.facing, fy+1);
+    cx.quadraticCurveTo(x, fy - 15, x + 7*s.facing, fy+1);
+    cx.closePath(); cx.fill();
+    cx.strokeStyle = 'rgba(200,235,250,0.4)'; cx.lineWidth = 1.2;
+    cx.beginPath(); cx.moveTo(x - s.facing*10, fy+1); cx.lineTo(x - s.facing*26, fy+1); cx.stroke();
+  }
 }
 function drawRescue(r) {
   const x = r.x - camX, y = r.y - camY;
