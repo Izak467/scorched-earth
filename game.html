@@ -541,8 +541,13 @@ let deeps = [], fishes = [];
 let trains = [], tanks = [], shells = [], sharks = [];
 let atrainDebris = [];   // A-Train's thrown-rubble answer to a player who just stays airborne
 let lamplighters = [], fireballs = [];
-let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(35,50), jetTimer = rand(10,18), atrainTimer = rand(30,55), maeveTimer = rand(35,60), deepTimer = rand(40,70), lamplighterTimer = rand(40,65);
+// each of these only starts ticking once its kill-threshold gate opens (see the spawn director),
+// so the value here is really "how long after the gate opens" — widened across all of them, and
+// the gates themselves spaced further apart in kills, so the whole cast doesn't debut in a pile
+// in the first few minutes the way it used to
+let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(60,90), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(70,100), deepTimer = rand(40,70), lamplighterTimer = rand(55,80);
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
+let deepArrivalT = -1;   // gameT the player first reached the dock — arms his fast first-spawn timer
 let trainTimer = rand(10,18), tankTimer = rand(18,28);
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
 const TRAIN_SCALE = 1.6;         // cars were reading too small against the buildings
@@ -722,7 +727,7 @@ function spawnMaeve() {
   const side = Math.random()<0.5 ? -1 : 1;
   const x = clamp(P.x + side*(VW*0.6+300), 100, WORLD_W-100);
   maeves.push({ x, y: GROUND_Y, mode: 'ground', buildingIdx: -1, wanderX: x,
-    hp: 2200, maxHp: 2200, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
+    hp: 2800, maxHp: 2800, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
     facing: 1, dead: false, atkCd: rand(1.5,2.4), jumpVx: 0, jumpVy: 0,
     braceCd: rand(3,5), braceTele: 0, fleeing: false, fleeT: 0,
     weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.5,3), laserHitT: 0, hitFlag: false,
@@ -1593,6 +1598,13 @@ function update(dt) {
               life: rand(0.15,0.3), c: '#f2f6ff' });
           }
         }
+      } else if (a.state === 'dodge') {
+        // a real evasion window, not just cosmetic repositioning — she's still the thing that
+        // physically stops the beam (blocks it like anything else in the priority raycast), but
+        // moving fast enough mid-dodge that it doesn't land clean. without this the dodge did
+        // nothing but look nice while she quietly ate full damage the whole time anyway, which is
+        // exactly why standing on the ground and holding the beam on her still melted her fast
+        if (Math.random()<0.4) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-80,80),vy:rand(-100,20),life:rand(0.12,0.25),c:'#e0e8ff'});
       } else {
         a.hp -= 380*dt*LASER_DMG_MULT;
         if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
@@ -1679,27 +1691,34 @@ function update(dt) {
   const heliCap = Math.min(3, 1 + Math.floor(kills/50));
   if (heliTimer <= 0 && helis.filter(h=>!h.dead).length < heliCap) { spawnHeli(); heliTimer = rand(8, 14); }
   // villain timers only start ticking once their kill threshold is reached — hitting the
-  // milestone kicks off the countdown, it isn't running quietly since the start of the game
-  if (kills > 150) {
-    starlightTimer -= dt;
-    if (starlightTimer <= 0 && !supes.some(s=>s.boss)) { spawnStarlight(); starlightTimer = rand(55, 85); }
-  }
-  jetTimer -= dt;
-  if (jetTimer <= 0 && jets.filter(j=>!j.dead).length < 2) { spawnJet(); jetTimer = rand(18, 30); }
+  // milestone kicks off the countdown, it isn't running quietly since the start of the game.
+  // debut order: A-Train, then Lamplighter, then Starlight, then Maeve — gates spaced further
+  // apart than before so the whole cast doesn't show up in a pile within the first few minutes
   if (kills > 50) {
     atrainTimer -= dt;
     if (atrainTimer <= 0 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
   }
-  if (kills > 200) {
+  jetTimer -= dt;
+  if (jetTimer <= 0 && jets.filter(j=>!j.dead).length < 2) { spawnJet(); jetTimer = rand(18, 30); }
+  if (kills > 140) {
     lamplighterTimer -= dt;
     if (lamplighterTimer <= 0 && lamplighters.length === 0) { spawnLamplighter(); lamplighterTimer = rand(60, 90); }
   }
-  if (kills > 250) {
+  if (kills > 240) {
+    starlightTimer -= dt;
+    if (starlightTimer <= 0 && !supes.some(s=>s.boss)) { spawnStarlight(); starlightTimer = rand(55, 85); }
+  }
+  if (kills > 350) {
     maeveTimer -= dt;
     if (maeveTimer <= 0 && maeves.length === 0) { spawnMaeve(); maeveTimer = rand(65, 95); }
   }
-  // The Deep has no kill gate — he stirs once you've made enough carnage in HIS water
-  if (waterMayhem > 25) {
+  // The Deep has no kill gate — his very first appearance is instead timed off first reaching
+  // the dock at all (fast: 20-30s), rather than waiting on enough waterMayhem to pile up, which
+  // could leave him absent for a long time if the player hadn't caused trouble in the water yet.
+  // after that first fight, waterMayhem (permanently true once crossed) keeps him reactive to
+  // carnage in his own water for every appearance after
+  if (deepArrivalT < 0 && P.x > CITY_W) { deepArrivalT = gameT; deepTimer = rand(20, 30); }
+  if (waterMayhem > 25 || deepArrivalT >= 0) {
     deepTimer -= dt;
     if (deepTimer <= 0 && deeps.length === 0 && P.x > WATER_X - VW*0.6) { spawnDeep(); deepTimer = rand(50, 80); }
   }
@@ -1806,7 +1825,7 @@ function update(dt) {
       s.vx += (-dy/d) * s.orbitDir * 260*dt;
       s.vy += (dx/d) * s.orbitDir * 260*dt;
       s.vx -= s.vx*1.2*dt; s.vy -= s.vy*1.2*dt;
-      const spB = Math.hypot(s.vx,s.vy), mxB = 580;   // slightly faster than before
+      const spB = Math.hypot(s.vx,s.vy), mxB = 660;   // a bit faster still
       if (spB > mxB) { s.vx *= mxB/spB; s.vy *= mxB/spB; }
       // actively dodge the laser: juke perpendicular if the beam is aimed near her
       if (firing && P.beamEndX !== undefined) {
@@ -2366,24 +2385,26 @@ function update(dt) {
       // he doesn't live on the dock — if an attack left him beached there, he scrambles straight
       // back into the water instead of cruising around on land looking for you
       const beached = dp.x <= WATER_X;
-      // weaves toward you on an S-curve and every couple seconds kicks off a hard lateral
-      // reposition, instead of just closing the gap on a straight line
+      // weaves toward you on an S-curve and every couple seconds retargets the offset a little,
+      // instead of just closing the gap on a straight line
       let chaseX = beached ? WATER_X + 120 : P.x;
       if (!beached) {
         chaseX += Math.sin(gameT*2.4 + dp.weavePhase) * 170;
         dp.weaveCd -= dt;
         if (dp.weaveCd <= 0) {
-          dp.weaveCd = rand(1.6, 2.8);
-          // used to snap dp.x straight to a new spot — an instant teleport. now it just rerolls a
-          // target offset that the normal chase-step below eases into, same as Maeve's wanderX
-          dp.weaveOffset = (Math.random()<0.5?-1:1)*rand(120,240);
+          dp.weaveCd = rand(2.2, 3.4);
+          dp.weaveOffset = (Math.random()<0.5?-1:1)*rand(70,150);
         }
         chaseX += dp.weaveOffset;
       }
-      // was 430/s, noticeably slower than every other boss — read as absent even once you were
-      // right in his water
-      const step = Math.min(Math.abs(chaseX - dp.x), (beached ? 900 : 680)*dt);
-      dp.x += (chaseX >= dp.x ? 1 : -1) * step;
+      // a fixed-speed step that runs at full speed right up until it hits the target and stops
+      // dead reads as a snap/teleport, even though it's technically continuous — switched to the
+      // same proportional "faster when far, decelerating as it arrives" approach Maeve's chase
+      // already uses, so closing distance actually looks like swimming, not a dash-and-halt.
+      // also noticeably quicker than before (430/s) — he used to read as absent even once you
+      // were right in his water
+      const chaseVx = clamp((chaseX - dp.x) * (beached ? 4 : 2.6), beached ? -1300 : -780, beached ? 1300 : 780);
+      dp.x += chaseVx*dt;
       const depthY = beached ? GROUND_Y - 4 : GROUND_Y + 55 + Math.sin(gameT*1.7 + dp.weavePhase)*35;
       dp.y += (depthY - dp.y) * Math.min(1, dt*4);
       dp.facing = P.x >= dp.x ? 1 : -1;
@@ -2519,7 +2540,7 @@ function update(dt) {
         embers.push({ x: l.x+Math.cos(ang+spread)*rr, y: l.y+Math.sin(ang+spread)*rr,
           vx: Math.cos(ang+spread)*60, vy: Math.sin(ang+spread)*60-20, life: rand(0.2,0.4), r: rand(1.5,3.5) });
       }
-      const halfAngle = 0.5, range = 220;
+      const halfAngle = 0.5, range = 260;
       for (const g of grunts) if (!g.dead) {
         const gdx=g.x-l.x, gdy=(g.y-16)-l.y, gd=Math.hypot(gdx,gdy);
         if (gd<range && Math.abs(angDiff(Math.atan2(gdy,gdx),ang))<halfAngle) { g.dead=true; gibBurst(g.x,g.y-16,1); addKill(); }
@@ -2558,14 +2579,16 @@ function update(dt) {
       continue;
     }
 
-    // orbit-and-approach, same shape as Starlight but a closer preferred distance so the breath
-    // attack (close range) is actually reachable between dashes
-    const desired = 280;
+    // orbit-and-approach, same shape as Starlight — desired distance widened close to hers (was a
+    // tight 280, which at the same tangential force orbits fast enough to cross directly over/under
+    // the player often, flipping his facing constantly; a wider orbit has much lower angular speed
+    // for the same push). he still closes in for the dash/breath, this is just the "circling" radius
+    const desired = 360;
     const closeF = (d - desired)/400;
     l.vx += (dx/d) * closeF * 700*dt; l.vy += (dy/d) * closeF * 700*dt;
     l.vx += (-dy/d) * l.orbitDir * 260*dt; l.vy += (dx/d) * l.orbitDir * 260*dt;
     l.vx -= l.vx*1.2*dt; l.vy -= l.vy*1.2*dt;
-    const spL = Math.hypot(l.vx,l.vy), mxL = 560;
+    const spL = Math.hypot(l.vx,l.vy), mxL = 640;   // a bit faster still
     if (spL > mxL) { l.vx *= mxL/spL; l.vy *= mxL/spL; }
     if (firing && P.beamEndX !== undefined) {
       const bex = P.x + P.facing*6, bey = P.y - 24;
@@ -2587,9 +2610,9 @@ function update(dt) {
     if (Math.random() < dt*18) smokes.push({ x: l.x+rand(-8,8), y: l.y+rand(-8,8), r: rand(4,8), vr: rand(10,18), vy: rand(-30,-10), life: rand(0.3,0.55), c: 'rgba(120,60,20,' });
     if (Math.random() < dt*30) embers.push({ x: l.x+rand(-8,8), y: l.y+rand(-8,8), vx: rand(-15,15), vy: rand(-40,-10), life: rand(0.25,0.45), r: rand(1,2.2) });
     l.dashCd -= dt;
-    if (l.dashCd <= 0 && d < 260) { l.dashing = true; l.dashT = 0.35; l.dashVx = (dx/d)*1500; l.dashVy = (dy/d)*1500; }
+    if (l.dashCd <= 0 && d < 340) { l.dashing = true; l.dashT = 0.35; l.dashVx = (dx/d)*1500; l.dashVy = (dy/d)*1500; }
     l.breatheCd -= dt;
-    if (l.breatheCd <= 0 && d < 220) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
+    if (l.breatheCd <= 0 && d < 250) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
     l.atkCd -= dt;
     if (l.atkCd <= 0 && fireballLockout <= 0) {
       const a = Math.atan2(dy,dx);
@@ -3800,6 +3823,7 @@ function drawLamplighter(l) {
   const f = (P.x >= l.x) ? 1 : -1;
   cx.save(); cx.translate(x, y);
   if (isJuggled(l)) cx.rotate(gameT*11);
+  cx.scale(f*BOSS_SCALE, BOSS_SCALE);   // was drawn at 1x with no boss scale at all — read noticeably smaller than every other boss
   // licking-flame aura instead of a plain glow disc — a few flickering arcs around the body
   cx.globalCompositeOperation = 'lighter';
   for (let i=0;i<3;i++) {
@@ -3808,7 +3832,6 @@ function drawLamplighter(l) {
     cx.beginPath(); cx.arc(Math.sin(fa)*6, -6+Math.cos(fa*1.3)*5, 26+i*3, 0, 7); cx.fill();
   }
   cx.globalCompositeOperation = 'source-over';
-  cx.scale(f, 1);
   if (l.flash > 0) { cx.globalAlpha = 0.85; cx.translate(rand(-1.8,1.8), rand(-1.8,1.8)); }
   cx.fillStyle = '#ff6a1a';   // flame cape
   cx.beginPath(); cx.moveTo(-4, -16);
@@ -3826,13 +3849,34 @@ function drawLamplighter(l) {
   cx.restore();
   cx.globalAlpha = 1;
   if (l.breathing) {
-    // dragon-breath cone toward the player — triangular gradient flame
+    // dragon-breath: layered wavy flame tongues instead of one flat gradient triangle — a static
+    // triangle with a gradient just reads as a sun ray, not fire. each layer has its own phase so
+    // the edges lick and flicker instead of holding a fixed silhouette
     const ang = Math.atan2(P.y-l.y, P.x-l.x);
     cx.save(); cx.translate(x, y); cx.rotate(ang);
-    const grad = cx.createLinearGradient(0,0,220,0);
-    grad.addColorStop(0, 'rgba(255,220,120,0.85)'); grad.addColorStop(0.4, 'rgba(255,120,30,0.55)'); grad.addColorStop(1, 'rgba(255,60,20,0)');
-    cx.fillStyle = grad;
-    cx.beginPath(); cx.moveTo(0,0); cx.lineTo(220, -60); cx.lineTo(220, 60); cx.closePath(); cx.fill();
+    cx.globalCompositeOperation = 'lighter';
+    const len = 250 + Math.sin(gameT*16)*16;
+    for (let i=0;i<4;i++) {
+      const ph = gameT*11 + i*1.9;
+      const w0 = 9 + i*4;
+      const grad = cx.createLinearGradient(0,0,len,0);
+      grad.addColorStop(0, 'rgba(255,235,160,'+(0.75-i*0.12)+')');
+      grad.addColorStop(0.35, 'rgba(255,140,40,'+(0.55-i*0.09)+')');
+      grad.addColorStop(1, 'rgba(255,50,20,0)');
+      cx.fillStyle = grad;
+      cx.beginPath();
+      cx.moveTo(0, 0);
+      for (let t=0; t<=1.001; t+=0.12) {
+        const px = t*len, wob = Math.sin(t*8 + ph)*(1-t*0.6)*w0*1.8;
+        cx.lineTo(px, -(w0 + t*50) + wob);
+      }
+      for (let t=1; t>=-0.001; t-=0.12) {
+        const px = t*len, wob = Math.sin(t*8 + ph + 1.6)*(1-t*0.6)*w0*1.8;
+        cx.lineTo(px, (w0 + t*50) + wob);
+      }
+      cx.closePath(); cx.fill();
+    }
+    cx.globalCompositeOperation = 'source-over';
     cx.restore();
   }
   const w = 60, hpFrac = clamp(l.hp/l.maxHp, 0, 1);
