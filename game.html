@@ -1921,11 +1921,15 @@ function update(dt) {
     dp.atkCd -= dt; dp.tentCd -= dt;
 
     if (dp.state === 'lurk') {
-      // cruise just under the surface toward the player — only the fin shows
-      const step = Math.min(Math.abs(P.x - dp.x), 430*dt);
-      dp.x += (P.x >= dp.x ? 1 : -1) * step;
-      dp.y += ((GROUND_Y + 55) - dp.y) * Math.min(1, dt*4);
+      // he doesn't live on the dock — if an attack left him beached there, he scrambles straight
+      // back into the water instead of cruising around on land looking for you
+      const beached = dp.x <= WATER_X;
+      const chaseX = beached ? WATER_X + 120 : P.x;
+      const step = Math.min(Math.abs(chaseX - dp.x), (beached ? 900 : 430)*dt);
+      dp.x += (chaseX >= dp.x ? 1 : -1) * step;
+      dp.y += ((beached ? GROUND_Y - 4 : GROUND_Y + 55) - dp.y) * Math.min(1, dt*4);
       dp.facing = P.x >= dp.x ? 1 : -1;
+      if (beached) continue;   // don't run the (water-only) attack triggers while he's still stranded
       if (P.underwaterT > 3 && inWater(P.x, P.y)) {
         dp.state = 'grabdash'; dp.stateT = 1.5;   // you stayed down too long — he's coming
       } else if (dp.atkCd <= 0 && P.x > WATER_X - 200 && P.y < WATER_FLOOR - 40 && Math.abs(P.x - dp.x) < 760) {
@@ -1972,7 +1976,12 @@ function update(dt) {
     } else if (dp.state === 'fall') {
       dp.jumpVy += 1500*dt;
       dp.x += dp.jumpVx*0.4*dt; dp.y += dp.jumpVy*dt;
-      if (dp.y >= GROUND_Y + 30) { splash(dp.x, 600); dp.state = 'lurk'; dp.jumpVx = 0; dp.jumpVy = 0; }
+      if (dp.y >= GROUND_Y + 30) {
+        // a breach that carried him onto the dock lands as a wet slam on concrete, not a splash
+        if (dp.x > WATER_X) splash(dp.x, 600);
+        else { for (let i=0;i<8;i++) debris.push({ x: dp.x+rand(-16,16), y: GROUND_Y-2, vx: rand(-100,100), vy: -rand(40,140), rot: rand(0,7), vr: rand(-6,6), r: rand(3,6), c: '#3a333e', life: rand(0.5,0.9) }); shake(6); }
+        dp.state = 'lurk'; dp.jumpVx = 0; dp.jumpVy = 0;
+      }
     } else if (dp.state === 'grabdash') {
       dp.stateT -= dt;
       const dx = P.x-dp.x, dy = P.y-dp.y, dd = Math.hypot(dx,dy) || 1;
@@ -2022,12 +2031,16 @@ function update(dt) {
           P.vx += dp.chargeDir*2400; P.vy -= 350;
           P.hurtFlash = 1; shake(16); sfxHit(); thump(70,0.25,0.3);
           dp.state = 'lurk';
-        } else if (dp.x < WATER_X + 90 || dp.x > WORLD_W - 90 || Math.abs(dp.x - P.x) > 1400) {
+        } else if (dp.x < WATER_X - 260 || dp.x > WORLD_W - 90 || Math.abs(dp.x - P.x) > 1400) {
           dp.state = 'lurk';
         }
       }
     }
-    dp.x = clamp(dp.x, WATER_X + 60, WORLD_W - 60);
+    // committed to an attack (breaching, charging, hauling you out) he'll cross onto the dock to
+    // land it — he's just not going to wander up there on his own the way he patrols the water
+    const attacking = dp.state === 'crouch' || dp.state === 'jump' || dp.state === 'fall' ||
+                       dp.state === 'dolphin' || dp.state === 'grabdash' || dp.state === 'carry';
+    dp.x = clamp(dp.x, attacking ? WATER_X - 260 : WATER_X + 60, WORLD_W - 60);
     dp.y = clamp(dp.y, 120, WATER_FLOOR - 40);
   }
   deeps = deeps.filter(d => !d.dead);
@@ -2176,8 +2189,18 @@ function update(dt) {
       s.vx += Math.sign(tx.x - s.x) * (dart ? 900 : 220) * dt;
       s.vx = clamp(s.vx, dart ? -520 : -180, dart ? 520 : 180);
       if (best < 24) {
-        tx.dead = true; gibBurst(tx.x, GROUND_Y+22, 1.2); addKill();
-        splash(tx.x, 500); s.feedT = 16;
+        // a lighter kill than gibBurst on purpose — sharks can chain through several swimmers back
+        // to back, and gibBurst's full shake+thump stacking across every one of those made the
+        // screen feel like it never stopped rumbling, even for kills you never actually saw happen
+        tx.dead = true; addKill();
+        for (let i=0;i<7;i++) {
+          const ga = rand(0, Math.PI*2), sp = rand(60,200);
+          gibs.push({ x: tx.x, y: GROUND_Y+22, vx: Math.cos(ga)*sp, vy: Math.sin(ga)*sp-rand(40,120),
+            rot: rand(0,Math.PI*2), vr: rand(-9,9), r: rand(3,6), c: GIB_COLORS[randi(0,3)], life: rand(2,3) });
+        }
+        waterBlood(tx.x, GROUND_Y+16, rand(10,16));
+        splash(tx.x, 220); sfxSplat();
+        s.feedT = 16;
       }
     } else {
       let bx = null, bb = 1e9;
@@ -2828,7 +2851,7 @@ function drawMaeve(a) {
 function drawDeep(dp) {
   const x = dp.x - camX, y = dp.y - camY;
   if (x < -90 || x > VW+90) return;
-  const submerged = dp.state === 'lurk' || dp.state === 'grabdash' || dp.state === 'crouch' || dp.state === 'volley';
+  const submerged = dp.x > WATER_X && (dp.state === 'lurk' || dp.state === 'grabdash' || dp.state === 'crouch' || dp.state === 'volley');
   const fy = GROUND_Y - camY;
   if (submerged) {
     // always-on glow so he doesn't vanish against the water the way the other bosses never
