@@ -1101,8 +1101,8 @@ function update(dt) {
     const swim = inWater(P.x, P.y);
     const ACC = (2600 + 1900*P.boost) * (swim ? 0.45 : 1);
     const DRAG = swim ? 6.5 : (P.dashCoastT > 0 ? 1.7 : 5.0);
-    // acceleration curve (ACC) is untouched — only the ceiling on top speed moved, to 1.4x what it was
-    const MAX = 1.4 * (480 + 620*Math.pow(P.boost, 1.35)) * (swim ? 0.55 : 1);
+    // acceleration curve (ACC) is untouched — only the ceiling on top speed moved, to 1.08x what it was
+    const MAX = 1.08 * (480 + 620*Math.pow(P.boost, 1.35)) * (swim ? 0.55 : 1);
     let nx = ix, ny = iy;
     if (nx&&ny) { nx*=0.7071; ny*=0.7071; }
     P.vx += nx*ACC*dt; P.vy += ny*ACC*dt;
