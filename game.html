@@ -282,7 +282,7 @@ const containers = [];
       const stack = randi(3, 7);
       for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
         c: CONTAINER_COLORS[randi(0,3)], dead: false, vy: 0, vx: 0,
-        hp: 280, maxHp: 280 });
+        hp: 280, maxHp: 280, settled: true });
       x += 122;
     } else x += rand(30, 70);
   }
@@ -291,6 +291,8 @@ function containerBoom(ct) {
   if (ct.dead) return;
   ct.dead = true;
   addDamage(35000);
+  // anything that was resting on this one loses its support and needs to recompute a rest height
+  for (const o of containers) if (!o.dead && Math.abs(o.x-ct.x) < ct.w*0.7 && o.y < ct.y) o.settled = false;
   for (let i=0;i<10;i++) debris.push({ x: ct.x+rand(0,ct.w), y: ct.y+rand(0,ct.h),
     vx: rand(-200,200), vy: rand(-260,-40), rot: rand(0,7), vr: rand(-7,7),
     r: rand(3,7), c: ct.c, life: rand(1.2,2.4) });
@@ -721,9 +723,15 @@ function spawnSupe() {
 }
 function spawnStarlight() {
   const side = Math.random()<0.5 ? -1 : 1;
+  // if Lamplighter's already up, orbit the opposite direction he does — both bosses circle the
+  // same point (the player) at a similar radius with no awareness of each other, so with no bias
+  // they'd regularly sync into the same rotational direction and read as gravitating together
+  // instead of two separate threats
+  const opp = lamplighters.find(l => !l.dead);
+  const orbitDir = opp ? -opp.orbitDir : (Math.random()<0.5?1:-1);
   supes.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
     vx: 0, vy: 0, hp: 1400, maxHp: 1400, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
-    smokeT: 0, flash: 0, boss: true, orbitDir: Math.random()<0.5?1:-1, atkCd: rand(0.6,1.0),
+    smokeT: 0, flash: 0, boss: true, orbitDir, atkCd: rand(0.6,1.0),
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0 });
 }
 function spawnHeli() {
@@ -857,8 +865,12 @@ function deepDeath(dp) {
 // already reads well on Starlight, just retuned closer so the breath attack is reachable.
 function spawnLamplighter() {
   const side = Math.random()<0.5 ? -1 : 1;
+  // opposite orbit direction to Starlight if she's already up — see the matching comment in
+  // spawnStarlight, same reasoning
+  const opp = supes.find(s => s.boss && s.hp > 0);
+  const orbitDir = opp ? -opp.orbitDir : (Math.random()<0.5?1:-1);
   lamplighters.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
-    vx: 0, vy: 0, hp: 950, maxHp: 950, dead: false, orbitDir: Math.random()<0.5?1:-1,
+    vx: 0, vy: 0, hp: 1250, maxHp: 1250, dead: false, orbitDir,
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.6,2.4),
     breathing: false, breatheT: 0, breatheCd: rand(3.5,5), breatheHitCd: 0, atkCd: rand(1,1.6),
     smokeT: 0, flash: 0, launchedT: 0, facing: 1 });
@@ -1659,6 +1671,7 @@ function update(dt) {
       const ct = hitContainer;
       ct.hp -= 450*dt*LASER_DMG_MULT;
       ct.vx += ux*260*dt;
+      ct.settled = false;   // being shoved sideways — its rest height may no longer be valid
       if (Math.random()<0.4) sparks.push({x:beamEndX+rand(-10,10),y:beamEndY+rand(-8,8),vx:rand(-100,100),vy:rand(-120,20),life:rand(0.12,0.3),c:'#ffdd66'});
       if (ct.hp <= 0) containerBoom(ct);
     } else if (hitTank) {
@@ -2000,6 +2013,22 @@ function update(dt) {
     }
   }
   supes = supes.filter(s => s.hp > 0);
+  // Starlight and Lamplighter both orbit the player independently with no awareness of each
+  // other — same stacking problem as regular supes above, just at boss scale, which is why they
+  // were reading as gravitating toward each other whenever both were up. Wider radius since
+  // they're each already orbiting 300+ units out from the player.
+  for (const s of supes) {
+    if (!s.boss) continue;
+    for (const l of lamplighters) {
+      if (l.dead) continue;
+      const ddx=l.x-s.x, ddy=l.y-s.y, dd=Math.hypot(ddx,ddy)||1, minD=380;
+      if (dd < minD) {
+        const push=(minD-dd)*3, nxp=ddx/dd, nyp=ddy/dd;
+        s.x -= nxp*push*dt; s.y -= nyp*push*dt;
+        l.x += nxp*push*dt; l.y += nyp*push*dt;
+      }
+    }
+  }
 
   // ── helicopters ──
   for (const h of helis) {
@@ -2043,6 +2072,20 @@ function update(dt) {
       }
     }
   }
+  // helicopters and flying supes share the same airspace with no awareness of each other either
+  // — same fix, applied across the two types so they don't stack the same way
+  for (const h of helis) {
+    if (h.dead || h.falling) continue;
+    for (const s of supes) {
+      if (s.hp <= 0) continue;
+      const ddx=s.x-h.x, ddy=s.y-h.y, dd=Math.hypot(ddx,ddy)||1, minD=140;
+      if (dd < minD) {
+        const push=(minD-dd)*3, nxp=ddx/dd, nyp=ddy/dd;
+        h.x -= nxp*push*dt; h.y -= nyp*push*dt;
+        s.x += nxp*push*dt; s.y += nyp*push*dt;
+      }
+    }
+  }
   helis = helis.filter(h => !h.gone);
 
   // ── commercial jets (high-altitude scenery — plow into them or laser them down) ──
@@ -2066,12 +2109,20 @@ function update(dt) {
     if (p.geyserT <= 0) p.dead = true;
   }
   // ── dock containers: gravity-settle onto the stack (or dock) below, crush on landing ──
+  // this used to re-scan every OTHER container to find a rest height on every single container,
+  // every single frame, unconditionally — an O(n^2) check that ran at full cost even for
+  // containers that had been sitting still the entire game. that's the real source of the
+  // dock-area frame stutter now that stacks are this dense. `settled` skips the scan entirely
+  // once a container is actually at rest, and only gets cleared when something could plausibly
+  // have changed underneath it (a laser shove, or whatever it was resting on getting destroyed —
+  // see containerBoom).
   for (const ct of containers) {
     if (ct.dead) continue;
     if (ct.vx) {
       ct.x += ct.vx*dt; ct.vx -= ct.vx*3*dt;
       ct.x = clamp(ct.x, CITY_W + 20, WATER_X - ct.w - 20);
     }
+    if (ct.settled) continue;
     let restY = GROUND_Y - ct.h;
     for (const o of containers) {
       if (o === ct || o.dead) continue;
@@ -2088,7 +2139,10 @@ function update(dt) {
           for (const g of grunts) if (!g.dead && !g.air && !g.boatG && g.x > ct.x-8 && g.x < ct.x+ct.w+8 && Math.abs(g.y - (ct.y+ct.h)) < 30) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
         }
         ct.vy = 0;
+        ct.settled = true;
       }
+    } else {
+      ct.settled = true;
     }
   }
 
