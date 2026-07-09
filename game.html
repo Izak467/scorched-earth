@@ -60,15 +60,6 @@ const GROUND_Y = 1660;
 const WATER_FLOOR = GROUND_Y + 520;   // the sea here is shallow — you can dip under, not dive
 const CW = 17, CH = 23;              // structural cell (windows sit on 2x2 blocks)
 const rand = (a,b) => a + Math.random()*(b-a);
-// lightens (amt>0) or darkens (amt<0) a '#rrggbb' hex color — used for the subtle top-to-bottom
-// facade gradients instead of a flat fill
-function shadeColor(hex, amt) {
-  const n = parseInt(hex.slice(1), 16);
-  let r = (n>>16)&255, g = (n>>8)&255, b = n&255;
-  if (amt >= 0) { r += (255-r)*amt; g += (255-g)*amt; b += (255-b)*amt; }
-  else { r *= (1+amt); g *= (1+amt); b *= (1+amt); }
-  return 'rgb('+(r|0)+','+(g|0)+','+(b|0)+')';
-}
 const randi = (a,b) => Math.floor(rand(a,b+1));
 const clamp = (v,a,b) => v<a?a:v>b?b:v;
 const dist2 = (ax,ay,bx,by) => { const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
@@ -3301,14 +3292,21 @@ function drawCity() {
       }
       continue;
     }
-    // facade — a slight top-to-bottom gradient instead of one flat fill, reads as a little
-    // ambient sky-light on the upper floors and shadow toward street level
+    // facade — flat fill plus two cheap translucent overlay strips instead of a real
+    // CanvasGradient. A gradient object gets constructed fresh every frame for every visible
+    // building (gradients are defined in screen space, so caching across frames doesn't work
+    // while the camera's moving) — that's real per-frame cost for a subtle effect. Flat rects
+    // give nearly the same "lit from above" read for a fraction of the cost.
     const baseColor = b.ship ? '#323a46' : (archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade]);
-    const facadeG = cx.createLinearGradient(x, y, x, y+b.h);
-    facadeG.addColorStop(0, shadeColor(baseColor, 0.14));
-    facadeG.addColorStop(1, shadeColor(baseColor, -0.16));
-    cx.fillStyle = facadeG;
+    cx.fillStyle = baseColor;
     cx.fillRect(x, y, b.w, b.h);
+    cx.fillStyle = 'rgba(255,255,255,0.07)'; cx.fillRect(x, y, b.w, Math.min(60, b.h*0.25));
+    cx.fillStyle = 'rgba(0,0,0,0.12)'; cx.fillRect(x, y+b.h-Math.min(70, b.h*0.3), b.w, Math.min(70, b.h*0.3));
+    // destroyed-cell interiors and crack decals only matter once something's actually hit this
+    // building — skipping straight past both double loops (up to rows*cols checked twice) for
+    // every untouched building is the single biggest per-frame cost in the whole city render,
+    // and most buildings on screen at any moment are still fully intact
+    if (b.dirty) {
     // destroyed cells: exposed interior with floor slabs (not blank void)
     for (let cj=0; cj<b.rows; cj++) {
       let runStart = -1;
@@ -3338,6 +3336,7 @@ function drawCity() {
         cx.moveTo(cxp + 1, cyp); cx.lineTo(cxp + 6, cyp + 3);
         cx.stroke();
       }
+    }
     }
     // windows (on 2x2 cell blocks) + window civilians — round portholes on the ship, square windows elsewhere
     for (const w of b.wins) {
