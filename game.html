@@ -60,6 +60,15 @@ const GROUND_Y = 1660;
 const WATER_FLOOR = GROUND_Y + 520;   // the sea here is shallow — you can dip under, not dive
 const CW = 17, CH = 23;              // structural cell (windows sit on 2x2 blocks)
 const rand = (a,b) => a + Math.random()*(b-a);
+// lightens (amt>0) or darkens (amt<0) a '#rrggbb' hex color — used for the subtle top-to-bottom
+// facade gradients instead of a flat fill
+function shadeColor(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n>>16)&255, g = (n>>8)&255, b = n&255;
+  if (amt >= 0) { r += (255-r)*amt; g += (255-g)*amt; b += (255-b)*amt; }
+  else { r *= (1+amt); g *= (1+amt); b *= (1+amt); }
+  return 'rgb('+(r|0)+','+(g|0)+','+(b|0)+')';
+}
 const randi = (a,b) => Math.floor(rand(a,b+1));
 const clamp = (v,a,b) => v<a?a:v>b?b:v;
 const dist2 = (ax,ay,bx,by) => { const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
@@ -137,6 +146,36 @@ function pickRoofStyle(archetype) {
   if (r < 0.46) return 'mechanical';
   return null;
 }
+// individually destructible pieces for the roofline cap — geometry here has to stay in exact sync
+// with how drawCity renders each style (both index off the same chunk array), since a chunk's
+// offset/size IS its hitbox and IS what disappears when it dies. same idea as the ship's own
+// destructible edge detail, just for the rooftop caps.
+function makeRoofChunks(w, style, rubbleSeed) {
+  const chunks = [];
+  if (style === 'setback') {
+    let tw = w*0.7, oy = 0;
+    for (let t=0;t<3;t++) { const th=16; chunks.push({ox:(w-tw)/2, oy:oy-th, w:tw, h:th, hp:26, dead:false}); oy -= th; tw *= 0.72; }
+  } else if (style === 'spire') {
+    const sh = 70 + rubbleSeed*40;
+    chunks.push({ox: w*0.5-10, oy: -sh*0.5, w:20, h: sh*0.5, hp:20, dead:false});
+    chunks.push({ox: w*0.5-2, oy: -sh, w:4, h: sh*0.5, hp:14, dead:false});
+  } else if (style === 'sawtooth') {
+    const teeth = Math.max(3, Math.round(w/40)), tw = w/teeth;
+    for (let i=0;i<teeth;i++) chunks.push({ox: i*tw, oy: -14, w: tw, h: 14, hp:16, dead:false});
+  } else if (style === 'mechanical') {
+    const mw = Math.min(60, w*0.4);
+    chunks.push({ox: w*0.5-mw/2, oy: -22, w: mw, h: 22, hp:34, dead:false});
+  }
+  return chunks;
+}
+function roofChunkPop(rc, wx, wy) {
+  if (rc.dead) return;
+  rc.dead = true;
+  for (let i=0;i<5;i++) debris.push({ x: wx+rand(-6,6), y: wy+rand(-6,6), vx: rand(-120,120), vy: rand(-180,20),
+    rot: rand(0,7), vr: rand(-7,7), r: rand(2,4.5), c: ['#2e2638','#241e2e','#3a3346'][randi(0,2)], life: rand(1,2) });
+  if (Math.random()<0.5) sparks.push({x:wx,y:wy,vx:rand(-80,80),vy:rand(-100,-10),life:rand(0.12,0.25),c:'#ffdd66'});
+  sfxCrack();
+}
 (function genCity(){
   let x = -100;
   while (x < CITY_W - 500) {
@@ -151,10 +190,11 @@ function pickRoofStyle(archetype) {
     // single most-repeated action in the game (knocking one down) doesn't always play out the same
     const archRoll = Math.random();
     const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
+    const roofStyle = pickRoofStyle(archetype), rubbleSeed = Math.random();
     fgBuildings.push({x, w, h, cols, rows, roofY: GROUND_Y-h, shade: randi(0,2), wins, cells,
-      destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+      destroyed: 0, collapsed: false, rubbleSeed, dirty: false, supT: 0,
       ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07,
-      watertower: w > 200 && Math.random()<0.08, archetype, roofStyle: pickRoofStyle(archetype)});
+      watertower: w > 200 && Math.random()<0.08, archetype, roofStyle, roofChunks: makeRoofChunks(w, roofStyle, rubbleSeed)});
     x += w + rand(180, 460);
   }
 })();
@@ -176,7 +216,7 @@ function applyTowerFields(b) {
   for (let c=0;c<bigCols;c++) for (let r=0;r<bigRows;r++)
     if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.8, civ:false});
   Object.assign(b, {
-    h, rows, roofY: GROUND_Y - h, cells, wins, shade: 0, archetype: 'tower', roofStyle: null,
+    h, rows, roofY: GROUND_Y - h, cells, wins, shade: 0, archetype: 'tower', roofStyle: null, roofChunks: [],
     ant: false, ac: -1, watertower: false, burning: false,
     destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
     isTower: true, glassIntact: true, collapsedAtT: undefined
@@ -208,11 +248,12 @@ function respawnBuilding(b) {
     if (Math.random()<0.55) wins.push({c, r, warm:Math.random()<0.75, civ:Math.random()<0.22});
   const archRoll = Math.random();
   const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
+  const roofStyle = pickRoofStyle(archetype), rubbleSeed = Math.random();
   Object.assign(b, {
     h, rows, roofY: GROUND_Y-h, cells, wins, shade: randi(0,2),
-    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed, dirty: false, supT: 0,
     ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,b.w-50) : -1, burning: Math.random()<0.07,
-    watertower: b.w > 200 && Math.random()<0.08, archetype, roofStyle: pickRoofStyle(archetype),
+    watertower: b.w > 200 && Math.random()<0.08, archetype, roofStyle, roofChunks: makeRoofChunks(b.w, roofStyle, rubbleSeed),
     collapsedAtT: undefined, respawnGate: undefined
   });
 }
@@ -227,7 +268,8 @@ function makeShipPiece(x, cols, rows, opts) {
     if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
   const b = {x, w, h, cols, rows, roofY: GROUND_Y-h, shade: 0, wins, cells: new Float32Array(cols*rows),
     destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
-    ant: !!(opts&&opts.ant), ac: -1, burning: false, ship: true, bow: !!(opts&&opts.bow), stern: !!(opts&&opts.stern)};
+    ant: !!(opts&&opts.ant), ac: -1, burning: false, ship: true, bow: !!(opts&&opts.bow), stern: !!(opts&&opts.stern),
+    roofStyle: null, roofChunks: []};
   fgBuildings.push(b); shipPieces.push(b);
   return b;
 }
@@ -1063,6 +1105,22 @@ function collapseBuilding(b) {
   b.collapsing = true; b.collapseT = 0; b.collapseDur = 0.9; b.collapseFromH = b.h;
   b.cells.fill(1);   // structurally gone now — beam/player/blood pass through the crumbling shell
   addDamage(18e6);
+  // the V (and its glass, if it somehow never shattered) rides above the roofline, outside the
+  // normal cell grid — it needs its own debris burst here or it would just vanish instead of
+  // falling and breaking apart like everything else
+  if (b.isTower) {
+    const apexX = b.x + b.w*0.5, apexY = b.roofY - 16, tipY = b.roofY - 130;
+    const tipLX = b.x + b.w*0.30, tipRX = b.x + b.w*0.70;
+    for (let k=0;k<18;k++) debris.push({ x: rand(tipLX, tipRX), y: rand(tipY, apexY),
+      vx: rand(-190,190), vy: rand(-280,-40), rot: rand(0,7), vr: rand(-8,8),
+      r: rand(4,10), c: ['#e8c04a','#c9a03a','#a8822a'][randi(0,2)], life: rand(2,3.5), heavy: true });
+    if (b.glassIntact) {
+      for (let k=0;k<14;k++) debris.push({ x: rand(tipLX,tipRX), y: rand(tipY,apexY),
+        vx: rand(-220,220), vy: rand(-280,-30), rot: rand(0,7), vr: rand(-10,10),
+        r: rand(2,4.5), c: ['#bcd8e8','#8fb8cc','#e8f4fa'][randi(0,2)], life: rand(1,1.8), shard: true });
+      b.glassIntact = false;
+    }
+  }
   const FALLER_TOPS = ['#7a8fae','#ae7a7a','#7aae8b','#aea77a','#9b7aae'];
   for (const w of b.wins) if (w.civ && !w.civDead) {
     w.civDead = true;
@@ -1260,6 +1318,15 @@ function update(dt) {
     for (const p of streetProps) if (!p.dead) {
       if (p.type === 'light' && dist2(P.x,P.y,p.x,GROUND_Y-118) < 60*60) streetLightBoom(p);
       else if (p.type === 'hydrant' && p.geyserT <= 0 && dist2(P.x,P.y,p.x,GROUND_Y-10) < 50*50) hydrantBoom(p);
+    }
+    // destructible roofline pieces — a dash through one pops it instantly, same as a streetlight
+    for (const b of fgBuildings) {
+      if (b.collapsed || b.collapsing || !b.roofChunks.length) continue;
+      for (const rc of b.roofChunks) {
+        if (rc.dead) continue;
+        const rcx = b.x+rc.ox+rc.w/2, rcy = b.roofY+rc.oy+rc.h/2, rr = Math.max(rc.w,rc.h)/2+40;
+        if (dist2(P.x,P.y,rcx,rcy) < rr*rr) roofChunkPop(rc, rcx, rcy);
+      }
     }
     for (const s of supes) if (s.hp>0 && dist2(P.x,P.y,s.x,s.y) < 72*72) {
       // non-boss supes die outright either way, so the once-per-swing guard only actually matters
@@ -1474,7 +1541,7 @@ function update(dt) {
   if (buildingRespawnCd <= 0) {
     buildingRespawnCd = 2;
     for (const b of fgBuildings) {
-      if (b.ship || !b.collapsed) continue;   // ship pieces already have their own sink/respawn cycle
+      if (b.ship || b.isTower || !b.collapsed) continue;   // ship pieces have their own cycle; Vought Tower never comes back once it falls
       if (Math.abs((b.x + b.w/2) - (camX + VW/2)) < VW*2.2) continue;   // not safely off-screen (measured from viewport center)
       if (gameT - b.collapsedAtT < b.respawnGate) continue;
       if (Math.random() < 0.2) respawnBuilding(b);
@@ -1758,6 +1825,20 @@ function update(dt) {
     for (const p of streetProps) if (!p.dead) {
       if (p.type === 'light' && segDist(p.x, GROUND_Y-118, ex, ey, beamEndX, beamEndY) < 12) streetLightBoom(p);
       else if (p.type === 'hydrant' && p.geyserT <= 0 && segDist(p.x, GROUND_Y-10, ex, ey, beamEndX, beamEndY) < 14) hydrantBoom(p);
+    }
+    // destructible roofline pieces — sustained beam contact wears a chunk's hp down and pops it,
+    // same "chip away, don't just instant-pop" treatment containers/tanks already get
+    for (const b of fgBuildings) {
+      if (b.collapsed || b.collapsing || !b.roofChunks.length) continue;
+      for (const rc of b.roofChunks) {
+        if (rc.dead) continue;
+        const rcx = b.x+rc.ox+rc.w/2, rcy = b.roofY+rc.oy+rc.h/2;
+        if (segDist(rcx, rcy, ex, ey, beamEndX, beamEndY) < Math.max(rc.w,rc.h)/2 + 6) {
+          rc.hp -= 200*dt*LASER_DMG_MULT;
+          if (Math.random()<0.3) sparks.push({x:rcx,y:rcy,vx:rand(-80,80),vy:rand(-100,-10),life:rand(0.12,0.25),c:'#ffdd66'});
+          if (rc.hp <= 0) roofChunkPop(rc, rcx, rcy);
+        }
+      }
     }
     for (const r of rockets) if (!r.gone && segDist(r.x, r.y, ex, ey, beamEndX, beamEndY) < 16) {
       r.gone = true; explode(r.x, r.y, 46, 0, true);
@@ -3207,8 +3288,13 @@ function drawCity() {
       }
       continue;
     }
-    // facade
-    cx.fillStyle = b.ship ? '#323a46' : (archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade]);
+    // facade — a slight top-to-bottom gradient instead of one flat fill, reads as a little
+    // ambient sky-light on the upper floors and shadow toward street level
+    const baseColor = b.ship ? '#323a46' : (archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade]);
+    const facadeG = cx.createLinearGradient(x, y, x, y+b.h);
+    facadeG.addColorStop(0, shadeColor(baseColor, 0.14));
+    facadeG.addColorStop(1, shadeColor(baseColor, -0.16));
+    cx.fillStyle = facadeG;
     cx.fillRect(x, y, b.w, b.h);
     // destroyed cells: exposed interior with floor slabs (not blank void)
     for (let cj=0; cj<b.rows; cj++) {
@@ -3322,27 +3408,30 @@ function drawCity() {
       cx.fillRect(wtx-17, y-42, 34, 17);
       cx.beginPath(); cx.ellipse(wtx, y-42, 17, 8, 0, 0, 7); cx.fill();
     }
-    // roofline caps — purely decorative geometry above the roofline, the destructible cell grid
-    // underneath is still the same rectangle either way. this is what actually breaks up the
-    // skyline into distinct silhouettes instead of every building reading as the same box
-    if (b.roofStyle === 'setback') {
+    // roofline caps — now individually destructible: each piece is a chunk in b.roofChunks with
+    // its own hp, and drawing checks `dead` per-chunk instead of drawing the whole cap as one
+    // fixed unit. the offsets here have to stay in exact sync with makeRoofChunks — a chunk's
+    // stored ox/oy/w/h IS both its hitbox and what disappears when it's destroyed.
+    if (b.roofStyle === 'setback' && b.roofChunks.length) {
       cx.fillStyle = archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade];
-      let tw = b.w*0.7, ty = y;
-      for (let t=0;t<3;t++) { const th = 16; cx.fillRect(x + (b.w-tw)/2, ty-th, tw, th); ty -= th; tw *= 0.72; }
-    } else if (b.roofStyle === 'spire') {
+      for (const rc of b.roofChunks) { if (!rc.dead) cx.fillRect(x+rc.ox, y+rc.oy, rc.w, rc.h); }
+    } else if (b.roofStyle === 'spire' && b.roofChunks.length) {
       const sx = x + b.w*0.5, sh = 70 + b.rubbleSeed*40;
       cx.fillStyle = archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade];
-      cx.beginPath(); cx.moveTo(sx-10, y); cx.lineTo(sx+10, y); cx.lineTo(sx+2, y-sh*0.5); cx.lineTo(sx-2, y-sh*0.5); cx.closePath(); cx.fill();
-      cx.beginPath(); cx.moveTo(sx-2, y-sh*0.5); cx.lineTo(sx+2, y-sh*0.5); cx.lineTo(sx, y-sh); cx.closePath(); cx.fill();
-      cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2.4)))+')';
-      cx.beginPath(); cx.arc(sx, y-sh-3, 3, 0, 7); cx.fill();
-    } else if (b.roofStyle === 'sawtooth') {
+      if (!b.roofChunks[0].dead) { cx.beginPath(); cx.moveTo(sx-10, y); cx.lineTo(sx+10, y); cx.lineTo(sx+2, y-sh*0.5); cx.lineTo(sx-2, y-sh*0.5); cx.closePath(); cx.fill(); }
+      if (!b.roofChunks[1].dead) {
+        cx.beginPath(); cx.moveTo(sx-2, y-sh*0.5); cx.lineTo(sx+2, y-sh*0.5); cx.lineTo(sx, y-sh); cx.closePath(); cx.fill();
+        cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2.4)))+')';
+        cx.beginPath(); cx.arc(sx, y-sh-3, 3, 0, 7); cx.fill();
+      }
+    } else if (b.roofStyle === 'sawtooth' && b.roofChunks.length) {
       cx.fillStyle = archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade];
-      const teeth = Math.max(3, Math.round(b.w/40)), tw = b.w/teeth;
-      cx.beginPath(); cx.moveTo(x, y);
-      for (let i=0;i<teeth;i++) { cx.lineTo(x+i*tw+tw*0.5, y-14); cx.lineTo(x+(i+1)*tw, y); }
-      cx.closePath(); cx.fill();
-    } else if (b.roofStyle === 'mechanical') {
+      const teeth = b.roofChunks.length, tw = b.w/teeth;
+      for (let i=0;i<teeth;i++) {
+        if (b.roofChunks[i].dead) continue;
+        cx.beginPath(); cx.moveTo(x+i*tw, y); cx.lineTo(x+i*tw+tw*0.5, y-14); cx.lineTo(x+(i+1)*tw, y); cx.closePath(); cx.fill();
+      }
+    } else if (b.roofStyle === 'mechanical' && b.roofChunks.length && !b.roofChunks[0].dead) {
       const mx = x + b.w*0.5, mw = Math.min(60, b.w*0.4);
       cx.fillStyle = '#15121c'; cx.fillRect(mx-mw/2, y-22, mw, 22);
       cx.strokeStyle = 'rgba(0,0,0,0.4)'; cx.lineWidth = 1.5;
@@ -3355,10 +3444,12 @@ function drawCity() {
     // roofStyle system above (the tower sets roofStyle: null), and stops drawing the instant it
     // starts collapsing since we're already past that early-return above for that state.
     if (b.isTower) {
-      const apexX = x + b.w*0.5, apexY = y - 24;
-      const tipLX = x + b.w*0.08, tipRX = x + b.w*0.92, tipY = y - 190;
+      // lower and more acute than the first pass, and a real block letter — two solid
+      // flat-sided beams of constant width with sharp mitered corners, not a rounded stroke
+      const apexX = x + b.w*0.5, apexY = y - 16;
+      const tipLX = x + b.w*0.30, tipRX = x + b.w*0.70, tipY = y - 130;
       cx.fillStyle = 'rgba(232,192,74,0.18)';
-      cx.beginPath(); cx.arc(apexX, y-100, 130, 0, 7); cx.fill();
+      cx.beginPath(); cx.arc(apexX, y-75, 100, 0, 7); cx.fill();
       if (b.glassIntact) {
         const g = cx.createLinearGradient(apexX, tipY, apexX, apexY);
         g.addColorStop(0, 'rgba(190,230,255,0.6)'); g.addColorStop(1, 'rgba(140,195,225,0.3)');
@@ -3373,10 +3464,15 @@ function drawCity() {
           cx.stroke();
         }
       }
-      cx.strokeStyle = '#e8c04a'; cx.lineWidth = 14; cx.lineCap = 'round'; cx.lineJoin = 'round';
-      cx.beginPath(); cx.moveTo(tipLX, tipY); cx.lineTo(apexX, apexY); cx.lineTo(tipRX, tipY); cx.stroke();
-      cx.strokeStyle = 'rgba(255,240,190,0.5)'; cx.lineWidth = 4;
-      cx.beginPath(); cx.moveTo(tipLX, tipY); cx.lineTo(apexX, apexY); cx.lineTo(tipRX, tipY); cx.stroke();
+      const bw = 12;
+      cx.fillStyle = '#e8c04a';
+      cx.beginPath(); cx.moveTo(apexX-bw, apexY); cx.lineTo(tipLX-bw, tipY); cx.lineTo(tipLX+bw, tipY); cx.lineTo(apexX+bw, apexY); cx.closePath(); cx.fill();
+      cx.beginPath(); cx.moveTo(apexX-bw, apexY); cx.lineTo(tipRX-bw, tipY); cx.lineTo(tipRX+bw, tipY); cx.lineTo(apexX+bw, apexY); cx.closePath(); cx.fill();
+      // a thin brighter inset strip on each beam for a bit of metallic bevel
+      cx.fillStyle = 'rgba(255,240,190,0.55)';
+      const hb = 3;
+      cx.beginPath(); cx.moveTo(apexX-bw+2, apexY-2); cx.lineTo(tipLX-bw+2, tipY+2); cx.lineTo(tipLX-bw+2+hb, tipY+2); cx.lineTo(apexX-bw+2+hb, apexY-2); cx.closePath(); cx.fill();
+      cx.beginPath(); cx.moveTo(apexX+bw-2-hb, apexY-2); cx.lineTo(tipRX+bw-2-hb, tipY+2); cx.lineTo(tipRX+bw-2, tipY+2); cx.lineTo(apexX+bw-2, apexY-2); cx.closePath(); cx.fill();
     }
     if (b.burning) {
       const fl = 0.6 + 0.4*Math.abs(Math.sin(gameT*9 + b.rubbleSeed*30));
@@ -4441,7 +4537,11 @@ function draw() {
   for (const l of lamplighters) if (!l.dead) drawLamplighter(l);
   for (const h of helis) drawHeli(h);
   drawFx();
-  drawPlayer();
+  // during the intro, he's rising up inside the tower below the glass — drawPlayer() has no
+  // concept of "behind the building," it just draws on top of whatever drawCity already put down,
+  // so without this he'd be visible through the tower's own facade the whole way up instead of
+  // staying hidden until he actually bursts through
+  if (!introActive || introShattered) drawPlayer();
   drawLaser();
   // underwater tint: everything below the surface out in the water zone reads blue-green
   {
@@ -4485,24 +4585,26 @@ let lastT = performance.now();
 // the normal game needs to be guarded against "what if the player hasn't spawned in yet." Reuses
 // the real draw() unchanged (camX/camY and P.x/P.y are just data it reads), so no separate intro
 // draw path is needed — scripting the camera and the player is enough.
-const INTRO_ASCENT_START = 1.4, INTRO_ASCENT_END = 2.1, INTRO_HOLD_END = 3.3;
+const INTRO_ASCENT_START = 1.4, INTRO_SHOOT_END = 1.9, INTRO_SETTLE_END = 2.5, INTRO_HOLD_END = 3.3;
 function updateIntro(dt) {
   introT += dt;
   gameT += dt;   // keeps ambient animation phases (window lights, the V's blinking beacon) moving
   const tX = voughtTower ? voughtTower.x + voughtTower.w/2 : CITY_W/2;
   const roofY = voughtTower ? voughtTower.roofY : GROUND_Y - 900;
-  const glassY = roofY - 107;   // roughly the mid-height of the V's glass wedge — the shatter trigger line
+  const glassY = roofY - 73;   // mid-height of the (now lower) V's glass wedge — the shatter trigger line
   camX = tX - VW/2;
   camY = roofY - VH*0.42;
-  const startY = roofY + 420, endY = roofY - 230;
+  const startY = roofY + 420, endY = roofY - 190, overshootY = endY - 45;
   if (introT < INTRO_ASCENT_START) {
     // ESTABLISH — parked out of view below the glass, camera holds on the tower alone
     P.x = tX; P.y = startY; P.vx = 0; P.vy = 0;
-  } else if (introT < INTRO_ASCENT_END) {
-    const t = clamp((introT - INTRO_ASCENT_START) / (INTRO_ASCENT_END - INTRO_ASCENT_START), 0, 1);
-    const eased = 1 - Math.pow(1-t, 3);   // ease-out — fast off the mark, settles into place at the top
+  } else if (introT < INTRO_SHOOT_END) {
+    // SHOOT — a real fast burst up through the glass, overshooting past his final resting height
+    // rather than easing straight onto it. this is also where the shatter triggers.
+    const t = clamp((introT - INTRO_ASCENT_START) / (INTRO_SHOOT_END - INTRO_ASCENT_START), 0, 1);
+    const eased = 1 - Math.pow(1-t, 4);
     const prevY = P.y;
-    P.x = tX; P.y = startY + (endY-startY)*eased;
+    P.x = tX; P.y = startY + (overshootY-startY)*eased;
     P.vx = 0; P.vy = (P.y - prevY)/dt;   // real instantaneous velocity so the existing speed-line FX kicks in
     if (!introShattered && P.y <= glassY) {
       introShattered = true;
@@ -4513,9 +4615,17 @@ function updateIntro(dt) {
         r: rand(2,4.5), c: ['#bcd8e8','#8fb8cc','#e8f4fa'][randi(0,2)], life: rand(1,1.8), shard: true });
       for (let i=0;i<16;i++) sparks.push({ x: tX+rand(-40,40), y: glassY, vx: rand(-180,180), vy: rand(-220,-40), life: rand(0.2,0.4), c: '#eaf6ff' });
     }
+  } else if (introT < INTRO_SETTLE_END) {
+    // SETTLE — floats back down a touch onto where he actually holds, instead of landing dead-on
+    // the target the instant the rise finishes
+    const t = clamp((introT - INTRO_SHOOT_END) / (INTRO_SETTLE_END - INTRO_SHOOT_END), 0, 1);
+    const eased = 1 - Math.pow(1-t, 2);
+    const prevY = P.y;
+    P.x = tX; P.y = overshootY + (endY-overshootY)*eased;
+    P.vx = 0; P.vy = (P.y - prevY)/dt;
   } else if (introT < INTRO_HOLD_END) {
-    // HOLD — above the tower now, holds still for a beat
-    P.x = tX; P.y = endY; P.vx = 0; P.vy = 0;
+    // HOLD — above the tower now, a small idle bob instead of dead-still so it doesn't go rigid
+    P.x = tX; P.y = endY + Math.sin((introT-INTRO_SETTLE_END)*2.4)*3; P.vx = 0; P.vy = 0;
   } else {
     // HANDOFF — hand control back; the normal camera-follow easing (update(), ~line 1357) takes
     // it from here, and since P is already sitting right at the tower this continues smoothly
