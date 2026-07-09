@@ -324,7 +324,7 @@ const containers = [];
       const stack = randi(3, 7);
       for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
         c: CONTAINER_COLORS[randi(0,3)], dead: false, vy: 0, vx: 0,
-        hp: 280, maxHp: 280, settled: true });
+        hp: 170, maxHp: 170, settled: true });
       x += 122;
     } else x += rand(30, 70);
   }
@@ -779,7 +779,7 @@ function spawnStarlight() {
 function spawnHeli() {
   const side = Math.random()<0.5 ? -1 : 1;
   helis.push({ x: clamp(P.x + side*(VW*0.65+300), 150, WORLD_W-150), y: rand(350, 900),
-    vx: 0, vy: 0, hp: 300, fireCd: rand(1.2,2.5), t: rand(0,9), dead: false, falling: false, rot: 0, smokeCd: 0,
+    vx: 0, vy: 0, hp: 250, fireCd: rand(1.2,2.5), t: rand(0,9), dead: false, falling: false, rot: 0, smokeCd: 0,
     holdDist: rand(340, 640), altOffset: rand(-220, 220) });   // per-heli hover spot, so they don't all converge to the same row
 }
 // commercial jets: high-altitude background traffic — pure scenery/hazard, no AI, just fly straight through.
@@ -931,7 +931,7 @@ function spawnTrain() {
   const n = 8;
   const cars = [];
   for (let i=0;i<n;i++) cars.push({ hp: 165, dead: false });
-  trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
+  trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(450,560), cars, t: rand(0,9) });
 }
 function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
 function trainCarDeath(t, i, cxw) {
@@ -1355,8 +1355,11 @@ function update(dt) {
     for (const a of maeves) if (!a.dead && !P.dashHitSet.has(a) && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
       P.dashHitSet.add(a);
       if (maeveBraced(a)) {
-        // bounces right off — knocks Homelander back instead of connecting
-        const kd = Math.hypot(P.x-a.x,P.y-a.y)||1;
+        // bounces right off — knocks Homelander back instead of connecting. floored, not just
+        // zero-guarded — at true point-blank range (e.g. right as your own dash closes the last
+        // few units of distance) a tiny-but-nonzero divisor still blew this up into an absurd
+        // velocity spike, which is what "flew back really fast" off a boss hit actually was
+        const kd = Math.max(Math.hypot(P.x-a.x,P.y-a.y), 20);
         P.vx += (P.x-a.x)/kd*700; P.vy += (P.y-a.y)/kd*700 - 100;
         for (let i=0;i<10;i++) sparks.push({x:a.x,y:a.y-16,vx:rand(-160,160),vy:rand(-200,-20),life:rand(0.15,0.35),c:'#e0e8ff'});
         shake(8); sfxCrack();
@@ -2006,7 +2009,7 @@ function update(dt) {
         s.x += s.dashVx*dt; s.y += s.dashVy*dt;
         s.facing = s.dashVx >= 0 ? 1 : -1;
         if (d < 50) {
-          const kd = d || 1;
+          const kd = Math.max(d, 20);   // floored — see the matching note on Maeve's brace-bounce
           P.knockT = Math.max(P.knockT, 0.4);
           P.vx += (P.x-s.x)/kd*1950; P.vy += (P.y-s.y)/kd*1950;
           P.hurtFlash = 1; shake(14); sfxHit(); thump(60,0.25,0.3);
@@ -2222,6 +2225,13 @@ function update(dt) {
         ct.vy = 0;
         ct.settled = true;
       }
+    } else if (ct.y > restY + 0.5) {
+      // ended up embedded in whatever it should be resting on — e.g. a laser shove landed it
+      // sideways on top of a taller neighboring stack, so its rest height just got higher. gravity
+      // should never leave something floating OR sunk into its own support; pop it up onto the
+      // surface instead of leaving it visibly clipped, which is what "not following normal
+      // gravity physics" actually was
+      ct.y = restY; ct.vy = 0; ct.settled = true;
     } else {
       ct.settled = true;
     }
@@ -2438,8 +2448,9 @@ function update(dt) {
       a.x += a.jumpVx*dt; a.y += a.jumpVy*dt;
       a.facing = a.jumpVx >= 0 ? 1 : -1;
       if (dist2(a.x,a.y,P.x,P.y) < 80*80) {
-        // connects — sends Homelander flying back harder than a regular supe hit, no stun
-        const kd = Math.hypot(P.x-a.x, P.y-a.y) || 1;
+        // connects — sends Homelander flying back harder than a regular supe hit, no stun. floored,
+        // not just zero-guarded — see the note on Maeve's brace-bounce
+        const kd = Math.max(Math.hypot(P.x-a.x, P.y-a.y), 20);
         P.grounded = false; P.hopping = false;   // un-ground him so the knockback actually sends him flying
         P.knockT = 0.5;                          // exempt from the normal max-speed clamp for a moment
         P.vx += (P.x-a.x)/kd * 3900; P.vy += (P.y-a.y)/kd * 3900;
@@ -2681,8 +2692,8 @@ function update(dt) {
       dp.x += dp.jumpVx*dt; dp.y += dp.jumpVy*dt;
       dp.facing = dp.jumpVx >= 0 ? 1 : -1;
       if (dist2(dp.x,dp.y,P.x,P.y) < 75*75) {
-        // connects — slightly less force than Maeve's hit, no stun
-        const kd = Math.hypot(P.x-dp.x, P.y-dp.y) || 1;
+        // connects — slightly less force than Maeve's hit, no stun. floored, not just zero-guarded
+        const kd = Math.max(Math.hypot(P.x-dp.x, P.y-dp.y), 20);
         P.grounded = false; P.hopping = false; P.knockT = 0.5;
         P.vx += (P.x-dp.x)/kd * 3200; P.vy += (P.y-dp.y)/kd * 3200;
         P.hurtFlash = 1; shake(18); sfxHit(); thump(65,0.3,0.3);
@@ -2810,7 +2821,7 @@ function update(dt) {
       l.facing = l.dashVx >= 0 ? 1 : -1;
       if (Math.random() < dt*90) embers.push({ x: l.x+rand(-6,6), y: l.y+rand(-6,6), vx: rand(-20,20), vy: rand(-40,-10), life: rand(0.3,0.55), r: rand(1.5,3) });
       if (d < 50) {
-        const kd = d || 1;
+        const kd = Math.max(d, 20);   // floored — see the matching note on Maeve's brace-bounce
         P.knockT = Math.max(P.knockT, 0.4);
         P.vx += (P.x-l.x)/kd*1950; P.vy += (P.y-l.y)/kd*1950;
         P.hurtFlash = 1; shake(14); sfxHit(); thump(60,0.25,0.3);
@@ -2829,7 +2840,7 @@ function update(dt) {
     l.vx += (dx/d) * closeF * 700*dt; l.vy += (dy/d) * closeF * 700*dt;
     l.vx += (-dy/d) * l.orbitDir * 260*dt; l.vy += (dx/d) * l.orbitDir * 260*dt;
     l.vx -= l.vx*1.2*dt; l.vy -= l.vy*1.2*dt;
-    const spL = Math.hypot(l.vx,l.vy), mxL = 640;   // a bit faster still
+    const spL = Math.hypot(l.vx,l.vy), mxL = 710;   // a bit faster again
     if (spL > mxL) { l.vx *= mxL/spL; l.vy *= mxL/spL; }
     if (firing && P.beamEndX !== undefined) {
       const bex = P.x + P.facing*6, bey = P.y - 24;
@@ -2871,7 +2882,7 @@ function update(dt) {
     f.x += f.vx*dt; f.y += f.vy*dt;
     if (dist2(f.x,f.y,P.x,P.y) < 22*22) {
       f.life = 0;
-      const kd = Math.hypot(P.x-f.x,P.y-f.y) || 1;
+      const kd = Math.max(Math.hypot(P.x-f.x,P.y-f.y), 20);
       P.vx += (P.x-f.x)/kd*300; P.vy += (P.y-f.y)/kd*300;
       P.hurtFlash = 1; sfxHit();
     } else if (f.vy > 0 && f.y > GROUND_Y+4 && f.x > WATER_X) { splash(f.x, 80); f.life = 0; }
@@ -2958,7 +2969,7 @@ function update(dt) {
       // a shell should hit noticeably harder than a generic blast — explode()'s own push is the
       // same flat force every explosion gets, so stack a real punch on top of it here
       if (dist2(P.x,P.y,sh.x,by) < 130*130) {
-        const d = Math.hypot(P.x-sh.x, P.y-by) || 1;
+        const d = Math.max(Math.hypot(P.x-sh.x, P.y-by), 20);
         P.vx += (P.x-sh.x)/d*900; P.vy += (P.y-by)/d*900 - 140;
         P.knockT = Math.max(P.knockT, 0.35);
       }
@@ -2968,7 +2979,7 @@ function update(dt) {
   shells = shells.filter(s => s.life > 0);
 
   // ── sharks: hunt the player the moment he's in the water; blood just draws more of them in ──
-  if (sharks.length < 5 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
+  if (sharks.length < 7 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
   for (const s of sharks) {
     if (s.dead) continue;
     s.t += dt; s.feedT -= dt; s.biteCd -= dt;
@@ -2981,7 +2992,7 @@ function update(dt) {
       s.vy = clamp(s.vy, dart ? -560 : -280, dart ? 560 : 280);
       s.y += s.vy*dt;
       if (dd < 42 && s.biteCd <= 0) {
-        const kd = dd || 1;
+        const kd = Math.max(dd, 20);
         P.vx += (P.x-s.x)/kd*420; P.vy += (P.y-s.y)/kd*420 - 60;
         P.hurtFlash = 1; P.knockT = Math.max(P.knockT, 0.3); shake(10); sfxHit();
         s.biteCd = 1.2; s.feedT = 16;
@@ -3032,7 +3043,7 @@ function update(dt) {
     if (dist2(rb.x,rb.y,P.x,P.y) < 34*34) {
       boom = true;
       P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(10); sfxHit(); thump(70,0.2,0.25);
-      const kd = Math.hypot(P.x-rb.x,P.y-rb.y) || 1;
+      const kd = Math.max(Math.hypot(P.x-rb.x,P.y-rb.y), 20);
       P.vx += (P.x-rb.x)/kd*700; P.vy += (P.y-rb.y)/kd*700 - 120;
     }
     if (rb.y >= GROUND_Y - 4) boom = true;
@@ -3075,7 +3086,7 @@ function update(dt) {
     if (Math.random() < dt*40) embers.push({ x: fb.x, y: fb.y, vx: rand(-15,15), vy: rand(-15,15), life: rand(0.15,0.3), r: rand(1,2) });
     if (dist2(fb.x,fb.y,P.x,P.y) < 30*30) {
       fb.life = 0; P.stunT = Math.max(P.stunT, 0.5); fireballLockout = 1.2; P.hurtFlash = 1; shake(10); sfxHit(); thump(160, 0.25, 0.22);
-      const kd = Math.hypot(P.x-fb.x,P.y-fb.y) || 1;
+      const kd = Math.max(Math.hypot(P.x-fb.x,P.y-fb.y), 20);
       P.vx += (P.x-fb.x)/kd*400; P.vy += (P.y-fb.y)/kd*400;
       for (let i=0;i<8;i++) sparks.push({x:fb.x,y:fb.y,vx:rand(-140,140),vy:rand(-140,140),life:rand(0.2,0.4),c:'#ff8a3a'});
     } else if (cellIntactAt(fb.x, fb.y) || (fb.y > GROUND_Y && (fb.x <= WATER_X || fb.y > WATER_FLOOR))) fb.life = 0;
@@ -3091,7 +3102,7 @@ function update(dt) {
     lb.x += lb.vx*dt; lb.y += lb.vy*dt; lb.life -= dt;
     if (dist2(lb.x,lb.y,P.x,P.y) < 18*18) {
       lb.life = 0; P.hurtFlash = 1; sfxHit();
-      const kd = Math.hypot(P.x-lb.x,P.y-lb.y)||1;
+      const kd = Math.max(Math.hypot(P.x-lb.x,P.y-lb.y), 20);
       if (lb.hail) {
         // hits harder than the ambient potshot, and stings enough to briefly stun — but it's a
         // fraction of a second, not the full lockout her electric bolt gives
@@ -3765,7 +3776,9 @@ function drawDeep(dp) {
   const w = 60, hpFrac = clamp(dp.hp/dp.maxHp, 0, 1);
   const barY = submerged ? fy - 32 : y - 62;
   cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, barY, w, 7);
-  cx.fillStyle = '#2fbf9a'; cx.fillRect(x-w/2, barY, w*hpFrac, 7);
+  // was the same teal as his own suit/glow/fin — blended straight into him. bright icy blue-white
+  // reads clearly against both his palette and the black bar background
+  cx.fillStyle = '#bfe8f5'; cx.fillRect(x-w/2, barY, w*hpFrac, 7);
 }
 function drawSailShip() {
   const sx = sailShip.x - camX;
