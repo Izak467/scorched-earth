@@ -198,15 +198,14 @@ function hydrantBoom(p) {
 // ─── Dock containers: destructible stacked props — cuttable, dashable, topple and crush ───
 const containers = [];
 (function genDock(){
-  // palette pulled straight from the train's own livery (car red/blue + stripe gold) so the
-  // dock reads as the same city instead of a generic shipping-crate rainbow
-  const CONTAINER_COLORS = ['#5d2d33','#3d4a5d','#8a6a2f','#4a5568','#2f3a42'];
+  // just the train's own four colors — its red, its blue, its stripe gold, and one grey
+  const CONTAINER_COLORS = ['#5d2d33','#3d4a5d','#c98a3a','#4a5568'];
   let x = CITY_W + 140;
   while (x < WATER_X - 300) {
     if (Math.random() < 0.92) {
       const stack = randi(3, 7);
       for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
-        c: CONTAINER_COLORS[randi(0,4)], dead: false, vy: 0, vx: 0,
+        c: CONTAINER_COLORS[randi(0,3)], dead: false, vy: 0, vx: 0,
         hp: 280, maxHp: 280 });
       x += 122;
     } else x += rand(30, 70);
@@ -1084,7 +1083,10 @@ function heliDeath(h) {
   for (let k=0;k<4;k++) fallers.push({ x: h.x+rand(-16,16), y: h.y+rand(-8,8),
     vx: rand(-90,90), vy: rand(-100,-20), skin: '#c8a080', top: tops[randi(0,3)], life: 6, dead: false });
   gibBurst(h.x, h.y, 1, false, 0, -40);
-  // no explosion at the kill — it catches fire and drops; the explosion is the crash
+  // a small burst at the kill itself, same beat trains/jets already get — hostile so it doesn't
+  // also chain-kill nearby fodder (the crew's already been thrown clear above), and noticeably
+  // smaller than the real impact explosion still waiting for it when it actually hits the ground
+  explode(h.x, h.y, 45, 0, true, 0.45, true);
   for (let i=0;i<10;i++) sparks.push({ x: h.x+rand(-20,20), y: h.y+rand(-10,10),
     vx: rand(-160,160), vy: rand(-140,40), life: rand(0.2,0.5), c: ['#ffdd66','#ff8833','#ff4422'][randi(0,2)] });
   for (let i=0;i<5;i++) smokes.push({ x: h.x+rand(-14,14), y: h.y, r: rand(8,16),
@@ -1263,16 +1265,25 @@ function update(dt) {
     P.vx -= P.vx*RDRAG*dt;
     const rsp = Math.abs(P.vx);
     if (rsp > RMAX) P.vx *= RMAX/rsp;
-    const surf = surfaceBelow(P.x, P.y - 4) - 26;
-    if (P.hopping) {
-      P.vy += 2100*dt;
-      P.y += P.vy*dt;
-      if (P.y >= surf) { P.y = surf; P.vy = 0; P.hopping = false; }
-    } else if (iy < 0) {
-      P.vy = -880; P.hopping = true; P.y += P.vy*dt;
+    // running on a rooftop specifically (well above street level) and there's no longer a building
+    // under him — walked off the edge. this used to keep tracking "whatever surface is below" and
+    // just glide him straight down to the street; now it kicks him back into normal flight instead,
+    // same as if he'd stepped off any other ledge
+    const bAtX = findBuildingAt(P.x);
+    if (P.y < GROUND_Y - 100 && (!bAtX || bAtX.collapsed || bAtX.collapsing)) {
+      P.grounded = false; P.hopping = false;
     } else {
-      P.vy = 0;
-      P.y += clamp(surf - P.y, -1900*dt, 1900*dt);
+      const surf = surfaceBelow(P.x, P.y - 4) - 26;
+      if (P.hopping) {
+        P.vy += 2100*dt;
+        P.y += P.vy*dt;
+        if (P.y >= surf) { P.y = surf; P.vy = 0; P.hopping = false; }
+      } else if (iy < 0) {
+        P.vy = -880; P.hopping = true; P.y += P.vy*dt;
+      } else {
+        P.vy = 0;
+        P.y += clamp(surf - P.y, -1900*dt, 1900*dt);
+      }
     }
   } else {
     if (P.dashCoastT > 0) P.dashCoastT -= dt;
