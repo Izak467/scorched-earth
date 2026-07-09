@@ -11,6 +11,7 @@
     position:fixed; top:14px; left:18px; color:#f2ede2; z-index:5;
     font-family:Georgia,'Times New Roman',serif; user-select:none; pointer-events:none;
     text-shadow:0 2px 6px rgba(0,0,0,.8);
+    opacity:0; transition:opacity 0.8s;   /* hidden during the intro cinematic, faded in at handoff */
   }
   #kills { font-size:30px; font-weight:bold; letter-spacing:1px; }
   #dmg { font-size:16px; color:#7fe08a; margin-top:1px; }
@@ -20,6 +21,7 @@
     color:rgba(242,237,226,.9); font-family:Georgia,serif; font-weight:bold;
     font-size:17px; letter-spacing:5px; z-index:5; user-select:none; pointer-events:none;
     text-shadow:0 2px 8px rgba(0,0,0,.9);
+    opacity:0; transition:opacity 0.8s;
   }
   #hint {
     position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
@@ -27,6 +29,7 @@
     padding:7px 16px; border-radius:8px; font-family:Georgia,serif; font-size:12.5px;
     letter-spacing:.4px; z-index:5; user-select:none; pointer-events:none;
     transition:opacity 1.5s; white-space:nowrap;
+    opacity:0;   /* hidden during the intro, faded in at handoff same as #hud/#title */
   }
 </style>
 </head>
@@ -119,6 +122,21 @@ function flashScorch(x, y, r) { if (x > WATER_X) return; scorchFx.push({x, y, r:
 
 // ─── City generation ───
 const fgBuildings = [];
+// purely decorative rooflines, drawn above roofY same as the existing watertower/antenna — the
+// destructible cell grid never changes shape, this is just what breaks up the skyline silhouette
+// so knocking a building down doesn't always look like the same box every time
+function pickRoofStyle(archetype) {
+  const r = Math.random();
+  if (archetype === 'construction') return null;   // reads as unfinished — no cap fits that
+  if (archetype === 'glass') return r < 0.5 ? 'spire' : r < 0.8 ? 'setback' : null;
+  if (archetype === 'brick') return r < 0.45 ? 'sawtooth' : r < 0.6 ? 'mechanical' : null;
+  // default grid buildings — a mix, but most still stay plain flat
+  if (r < 0.14) return 'setback';
+  if (r < 0.26) return 'spire';
+  if (r < 0.38) return 'sawtooth';
+  if (r < 0.46) return 'mechanical';
+  return null;
+}
 (function genCity(){
   let x = -100;
   while (x < CITY_W - 500) {
@@ -136,10 +154,68 @@ const fgBuildings = [];
     fgBuildings.push({x, w, h, cols, rows, roofY: GROUND_Y-h, shade: randi(0,2), wins, cells,
       destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
       ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07,
-      watertower: w > 200 && Math.random()<0.08, archetype});
+      watertower: w > 200 && Math.random()<0.08, archetype, roofStyle: pickRoofStyle(archetype)});
     x += w + rand(180, 460);
   }
 })();
+// ─── Vought Tower: the tallest building in the city, planted at city center — the intro
+// cinematic starts here, and later collapses/regrowths (see the building-respawn system, below
+// in update()) reuse this exact same field-setup so the tower always comes back as itself
+// instead of rerolling into a generic building.
+let voughtTower = null;
+function applyTowerFields(b) {
+  // roughly 35% taller than the tallest normal building (920) — unmistakably the tallest thing
+  // in the city, but still comfortably inside the player's actual altitude ceiling (P.y is
+  // clamped to a minimum of 60 in update(), ~line 1367 — a much taller tower would put its own
+  // roof, and the V on top of it, permanently above where the player can ever fly)
+  const rows = 54, h = rows*CH;   // even, matching every other building's `2*randi(...)` row count
+  const cols = b.cols;
+  const cells = new Float32Array(cols*rows);
+  const wins = [];
+  const bigCols = cols/2, bigRows = rows/2;
+  for (let c=0;c<bigCols;c++) for (let r=0;r<bigRows;r++)
+    if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.8, civ:false});
+  Object.assign(b, {
+    h, rows, roofY: GROUND_Y - h, cells, wins, shade: 0, archetype: 'tower', roofStyle: null,
+    ant: false, ac: -1, watertower: false, burning: false,
+    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+    isTower: true, glassIntact: true, collapsedAtT: undefined
+  });
+}
+(function plantVoughtTower(){
+  // whichever generated building is closest to city center (preferring the widest nearby
+  // candidate for a sturdier-looking footprint) becomes the tower — overwritten in place so its
+  // x stays put and the sorted array `findBuildingAt` depends on is never disturbed
+  const centerX = CITY_W/2;
+  let best = null, bestW = -1;
+  for (const b of fgBuildings) {
+    if (Math.abs((b.x+b.w/2) - centerX) < 2200 && b.w > bestW) { best = b; bestW = b.w; }
+  }
+  if (best) { applyTowerFields(best); voughtTower = best; }
+})();
+// resets a collapsed building back to intact, in place (same x/w/array slot) — used by the
+// building-respawn system in update() once a building is safely off-screen and aged out. rerolls
+// height/windows/archetype/roofline/decorations so it reads as something new having gone up,
+// not the identical building blinking back — except the tower, which restores its own gold/V-glass
+// identity instead of rerolling into a generic building
+function respawnBuilding(b) {
+  if (b.isTower) { applyTowerFields(b); return; }
+  const cols = b.cols, rows = 2*randi(7, 20), h = rows*CH;
+  const cells = new Float32Array(cols*rows);
+  const wins = [];
+  const bigCols = cols/2, bigRows = rows/2;
+  for (let c=0;c<bigCols;c++) for (let r=0;r<bigRows;r++)
+    if (Math.random()<0.55) wins.push({c, r, warm:Math.random()<0.75, civ:Math.random()<0.22});
+  const archRoll = Math.random();
+  const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
+  Object.assign(b, {
+    h, rows, roofY: GROUND_Y-h, cells, wins, shade: randi(0,2),
+    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+    ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,b.w-50) : -1, burning: Math.random()<0.07,
+    watertower: b.w > 200 && Math.random()<0.08, archetype, roofStyle: pickRoofStyle(archetype),
+    collapsedAtT: undefined, respawnGate: undefined
+  });
+}
 // ─── The docked ship: three adjacent "buildings" (stern hull, bridge tower, bow hull) pushed
 // after the city so fgBuildings stays sorted — all the laser/cell/collapse physics come free.
 const SHIP_X = WATER_X + 400;
@@ -320,6 +396,7 @@ const DIRKEYS = {
 };
 const lastTap = {};
 let mouseSX = VW/2, mouseSY = VH/2, firing = false, paused = false, freezeT = 0;
+let introActive = true, introT = 0, introShattered = false;   // cold-open: bursting up through Vought Tower's glass
 
 window.addEventListener('keydown', e => {
   if (e.code==='Space' || e.code.slice(0,5)==='Arrow') e.preventDefault();
@@ -425,7 +502,7 @@ function pickLightSource(nearX) {
   return null;
 }
 function startDash(dir) {
-  if (paused || P.stunT > 0) return;
+  if (paused || P.stunT > 0 || introActive) return;
   // while a continuous down-slam is in progress, double-tapping up cancels it instead of
   // starting a new dash
   if (P.dashT > 0 && P.vertDash === 'down' && dir === 'up') {
@@ -461,7 +538,7 @@ function startDash(dir) {
   shake(6); sfxDash();
 }
 function thunderclap() {
-  if (P.clapCd > 0 || paused || P.stunT > 0) return;
+  if (P.clapCd > 0 || paused || P.stunT > 0 || introActive) return;
   P.clapCd = 2.4;
   freezeT = Math.max(freezeT, 0.06);
   const R = 320;
@@ -548,6 +625,7 @@ let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, 
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
 let deepArrivalT = -1;   // gameT the player first reached the dock — arms his fast first-spawn timer
 let trainTimer = rand(10,18), tankTimer = rand(18,28);
+let buildingRespawnCd = 2;   // periodic off-screen/aged-out check — see the building-respawn system in update()
 const RAIL_Y = GROUND_Y - 540;   // the elevated rail line crossing the city
 const TRAIN_SCALE = 1.6;         // cars were reading too small against the buildings
 const CAR_SPACE = 118 * TRAIN_SCALE, CAR_HIT_R = 52 * TRAIN_SCALE, CAR_CENTER_OFF = 16 * TRAIN_SCALE;
@@ -1366,12 +1444,29 @@ function update(dt) {
       const p = b.collapseT / b.collapseDur;
       if (Math.random() < dt*30) smokes.push({ x: rand(b.x,b.x+b.w), y: GROUND_Y - rand(0, b.collapseFromH*(1-p)),
         r: rand(14,30), vr: rand(20,40), vy: rand(-30,-10), life: rand(0.5,1), c:'rgba(120,110,124,' });
-      if (b.collapseT >= b.collapseDur) { b.collapsing = false; b.collapsed = true; }
+      if (b.collapseT >= b.collapseDur) { b.collapsing = false; b.collapsed = true; b.collapsedAtT = gameT; b.respawnGate = rand(90, 150); }
       continue;
     }
     if (b.collapsed || !b.dirty) continue;
     b.supT -= dt;
     if (b.supT <= 0) { b.supT = 0.13; runSupport(b); }
+  }
+
+  // ── building respawn: buildings are the one thing in this world that doesn't come back on
+  // its own the way traffic/ships/enemies do. same principle real open-world games use to recycle
+  // destroyed props without it ever reading as fake — a building only becomes eligible once it's
+  // safely outside the camera's view AND has sat collapsed for a while, and even then a low-odds
+  // roll spreads the actual moment out so a batch that went down together doesn't pop back in sync.
+  // the player is never structurally in a position to see it happen.
+  buildingRespawnCd -= dt;
+  if (buildingRespawnCd <= 0) {
+    buildingRespawnCd = 2;
+    for (const b of fgBuildings) {
+      if (b.ship || !b.collapsed) continue;   // ship pieces already have their own sink/respawn cycle
+      if (Math.abs((b.x + b.w/2) - (camX + VW/2)) < VW*2.2) continue;   // not safely off-screen (measured from viewport center)
+      if (gameT - b.collapsedAtT < b.respawnGate) continue;
+      if (Math.random() < 0.2) respawnBuilding(b);
+    }
   }
 
   // ── falling bodies (ejected from collapsing buildings) ──
@@ -3017,7 +3112,7 @@ function drawCity() {
   const shades = ['#1b1626','#20182c','#171322'];
   // archetype palettes give each variant its own color family instead of just the neutral default
   const archShades = { glass: ['#1c2e3a','#223648','#182732'], brick: ['#2e1c18','#3a2420','#28160f'],
-    construction: ['#242024','#2a2428','#1e1a1e'] };
+    construction: ['#242024','#2a2428','#1e1a1e'], tower: ['#8a6a1e','#a8822a','#6e5216'] };
   for (const b of fgBuildings) {
     const x = b.x - camX, y = b.roofY - camY;
     if (x + b.w < -60 || x > VW+60) continue;
@@ -3172,6 +3267,62 @@ function drawCity() {
       cx.beginPath(); cx.ellipse(wtx, y-34, 17, 9, 0, 0, 7); cx.fill();
       cx.fillRect(wtx-17, y-42, 34, 17);
       cx.beginPath(); cx.ellipse(wtx, y-42, 17, 8, 0, 0, 7); cx.fill();
+    }
+    // roofline caps — purely decorative geometry above the roofline, the destructible cell grid
+    // underneath is still the same rectangle either way. this is what actually breaks up the
+    // skyline into distinct silhouettes instead of every building reading as the same box
+    if (b.roofStyle === 'setback') {
+      cx.fillStyle = archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade];
+      let tw = b.w*0.7, ty = y;
+      for (let t=0;t<3;t++) { const th = 16; cx.fillRect(x + (b.w-tw)/2, ty-th, tw, th); ty -= th; tw *= 0.72; }
+    } else if (b.roofStyle === 'spire') {
+      const sx = x + b.w*0.5, sh = 70 + b.rubbleSeed*40;
+      cx.fillStyle = archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade];
+      cx.beginPath(); cx.moveTo(sx-10, y); cx.lineTo(sx+10, y); cx.lineTo(sx+2, y-sh*0.5); cx.lineTo(sx-2, y-sh*0.5); cx.closePath(); cx.fill();
+      cx.beginPath(); cx.moveTo(sx-2, y-sh*0.5); cx.lineTo(sx+2, y-sh*0.5); cx.lineTo(sx, y-sh); cx.closePath(); cx.fill();
+      cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2.4)))+')';
+      cx.beginPath(); cx.arc(sx, y-sh-3, 3, 0, 7); cx.fill();
+    } else if (b.roofStyle === 'sawtooth') {
+      cx.fillStyle = archShades[b.archetype] ? archShades[b.archetype][b.shade] : shades[b.shade];
+      const teeth = Math.max(3, Math.round(b.w/40)), tw = b.w/teeth;
+      cx.beginPath(); cx.moveTo(x, y);
+      for (let i=0;i<teeth;i++) { cx.lineTo(x+i*tw+tw*0.5, y-14); cx.lineTo(x+(i+1)*tw, y); }
+      cx.closePath(); cx.fill();
+    } else if (b.roofStyle === 'mechanical') {
+      const mx = x + b.w*0.5, mw = Math.min(60, b.w*0.4);
+      cx.fillStyle = '#15121c'; cx.fillRect(mx-mw/2, y-22, mw, 22);
+      cx.strokeStyle = 'rgba(0,0,0,0.4)'; cx.lineWidth = 1.5;
+      cx.beginPath(); cx.moveTo(mx-mw/2+8, y-22); cx.lineTo(mx-mw/2+8, y); cx.moveTo(mx+mw/2-8, y-22); cx.lineTo(mx+mw/2-8, y); cx.stroke();
+      cx.fillStyle = '#2a2438';
+      cx.beginPath(); cx.arc(mx-mw*0.22, y-22, 6, 0, 7); cx.fill();
+      cx.beginPath(); cx.arc(mx+mw*0.22, y-22, 6, 0, 7); cx.fill();
+    }
+    // Vought Tower's rooftop V + glass — the intro cinematic's centerpiece. Independent of the
+    // roofStyle system above (the tower sets roofStyle: null), and stops drawing the instant it
+    // starts collapsing since we're already past that early-return above for that state.
+    if (b.isTower) {
+      const apexX = x + b.w*0.5, apexY = y - 24;
+      const tipLX = x + b.w*0.08, tipRX = x + b.w*0.92, tipY = y - 190;
+      cx.fillStyle = 'rgba(232,192,74,0.18)';
+      cx.beginPath(); cx.arc(apexX, y-100, 130, 0, 7); cx.fill();
+      if (b.glassIntact) {
+        const g = cx.createLinearGradient(apexX, tipY, apexX, apexY);
+        g.addColorStop(0, 'rgba(190,230,255,0.6)'); g.addColorStop(1, 'rgba(140,195,225,0.3)');
+        cx.fillStyle = g;
+        cx.beginPath(); cx.moveTo(apexX, apexY); cx.lineTo(tipLX, tipY); cx.lineTo(tipRX, tipY); cx.closePath(); cx.fill();
+        cx.strokeStyle = 'rgba(255,255,255,0.4)'; cx.lineWidth = 1;
+        for (let i=1;i<4;i++) {
+          const t = i/4;
+          cx.beginPath();
+          cx.moveTo(apexX + (tipLX-apexX)*t, apexY + (tipY-apexY)*t);
+          cx.lineTo(apexX + (tipRX-apexX)*t, apexY + (tipY-apexY)*t);
+          cx.stroke();
+        }
+      }
+      cx.strokeStyle = '#e8c04a'; cx.lineWidth = 14; cx.lineCap = 'round'; cx.lineJoin = 'round';
+      cx.beginPath(); cx.moveTo(tipLX, tipY); cx.lineTo(apexX, apexY); cx.lineTo(tipRX, tipY); cx.stroke();
+      cx.strokeStyle = 'rgba(255,240,190,0.5)'; cx.lineWidth = 4;
+      cx.beginPath(); cx.moveTo(tipLX, tipY); cx.lineTo(apexX, apexY); cx.lineTo(tipRX, tipY); cx.stroke();
     }
     if (b.burning) {
       const fl = 0.6 + 0.4*Math.abs(Math.sin(gameT*9 + b.rubbleSeed*30));
@@ -4275,10 +4426,64 @@ function draw() {
 
 // ─── Main loop ───
 let lastT = performance.now();
+// ─── Cold open: Vought Tower, glass shatters, Homelander bursts up through it ───
+// A dedicated scripted update, run instead of the real update() while introActive — nothing in
+// the normal game needs to be guarded against "what if the player hasn't spawned in yet." Reuses
+// the real draw() unchanged (camX/camY and P.x/P.y are just data it reads), so no separate intro
+// draw path is needed — scripting the camera and the player is enough.
+const INTRO_ASCENT_START = 1.4, INTRO_ASCENT_END = 2.1, INTRO_HOLD_END = 3.3;
+function updateIntro(dt) {
+  introT += dt;
+  gameT += dt;   // keeps ambient animation phases (window lights, the V's blinking beacon) moving
+  const tX = voughtTower ? voughtTower.x + voughtTower.w/2 : CITY_W/2;
+  const roofY = voughtTower ? voughtTower.roofY : GROUND_Y - 900;
+  const glassY = roofY - 107;   // roughly the mid-height of the V's glass wedge — the shatter trigger line
+  camX = tX - VW/2;
+  camY = roofY - VH*0.42;
+  const startY = roofY + 420, endY = roofY - 230;
+  if (introT < INTRO_ASCENT_START) {
+    // ESTABLISH — parked out of view below the glass, camera holds on the tower alone
+    P.x = tX; P.y = startY; P.vx = 0; P.vy = 0;
+  } else if (introT < INTRO_ASCENT_END) {
+    const t = clamp((introT - INTRO_ASCENT_START) / (INTRO_ASCENT_END - INTRO_ASCENT_START), 0, 1);
+    const eased = 1 - Math.pow(1-t, 3);   // ease-out — fast off the mark, settles into place at the top
+    const prevY = P.y;
+    P.x = tX; P.y = startY + (endY-startY)*eased;
+    P.vx = 0; P.vy = (P.y - prevY)/dt;   // real instantaneous velocity so the existing speed-line FX kicks in
+    if (!introShattered && P.y <= glassY) {
+      introShattered = true;
+      if (voughtTower) voughtTower.glassIntact = false;
+      shake(16); sfxCrack(); sfxBoom();
+      for (let i=0;i<28;i++) debris.push({ x: tX+rand(-70,70), y: glassY+rand(-10,10),
+        vx: rand(-260,260), vy: rand(-320,-40), rot: rand(0,7), vr: rand(-10,10),
+        r: rand(2,4.5), c: ['#bcd8e8','#8fb8cc','#e8f4fa'][randi(0,2)], life: rand(1,1.8), shard: true });
+      for (let i=0;i<16;i++) sparks.push({ x: tX+rand(-40,40), y: glassY, vx: rand(-180,180), vy: rand(-220,-40), life: rand(0.2,0.4), c: '#eaf6ff' });
+    }
+  } else if (introT < INTRO_HOLD_END) {
+    // HOLD — above the tower now, holds still for a beat
+    P.x = tX; P.y = endY; P.vx = 0; P.vy = 0;
+  } else {
+    // HANDOFF — hand control back; the normal camera-follow easing (update(), ~line 1357) takes
+    // it from here, and since P is already sitting right at the tower this continues smoothly
+    // into real gameplay instead of needing a manual blend
+    introActive = false;
+    P.x = tX; P.y = endY; P.vx = 0; P.vy = 0; P.facing = 1;
+    const hud = document.getElementById('hud'); if (hud) hud.style.opacity = '1';
+    const title = document.getElementById('title'); if (title) title.style.opacity = '1';
+    const hint = document.getElementById('hint'); if (hint) hint.style.opacity = '1';
+  }
+  shakeMag = Math.max(0, shakeMag - dt*30);
+  // shatter shards/sparks still need to fall and fade even though the real update() isn't running
+  for (const d of debris) { d.vy += 1400*dt; d.x += d.vx*dt; d.y += d.vy*dt; d.rot += d.vr*dt; d.life -= dt; }
+  for (const s of sparks) { s.vy += 800*dt; s.x += s.vx*dt; s.y += s.vy*dt; s.life -= dt; }
+  debris = debris.filter(d => d.life > 0);
+  sparks = sparks.filter(s => s.life > 0);
+}
 function frame(now) {
   const dt = Math.min(0.033, (now - lastT)/1000);
   lastT = now;
   if (freezeT > 0) { freezeT -= dt; draw(); requestAnimationFrame(frame); return; }
+  if (introActive) { updateIntro(dt); draw(); requestAnimationFrame(frame); return; }
   if (!paused) update(dt);
   draw();
   requestAnimationFrame(frame);
