@@ -931,7 +931,7 @@ function spawnTrain() {
   const n = 8;
   const cars = [];
   for (let i=0;i<n;i++) cars.push({ hp: 165, dead: false });
-  trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(450,560), cars, t: rand(0,9) });
+  trains.push({ x: dir>0 ? -n*CAR_SPACE-100 : CITY_W + n*CAR_SPACE + 100, dir, sp: rand(380,470), cars, t: rand(0,9) });
 }
 function trainCarX(t, i) { return t.x - t.dir*i*CAR_SPACE; }
 function trainCarDeath(t, i, cxw) {
@@ -2321,14 +2321,16 @@ function update(dt) {
       }
       const threatened = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 320*320) || laserThreat;
       if (threatened && a.fleeCd <= 0) {
-        a.wanderX = clamp(a.x + (a.x < P.x ? -1 : 1) * rand(700,1300), 60, WORLD_W-60);
-        a.stateT = rand(0.7,1.2); a.fleeCd = 1.1;
+        a.wanderX = clamp(a.x + (a.x < P.x ? -1 : 1) * rand(800,1500), 60, WORLD_W-60);
+        a.stateT = rand(0.9,1.5); a.fleeCd = 1.1;
       } else if (a.stateT <= 0) {
-        // long, fast sweeps that carry him well past the edges of the screen and back
-        a.wanderX = clamp(P.x + (Math.random()<0.5?-1:1)*rand(500,1300), 60, WORLD_W-60);
-        a.stateT = rand(0.5,1.1);
+        // long, fast sweeps that carry him well past the edges of the screen and back — both the
+        // distance and how long he commits to one sprint before re-picking a target are up a bit,
+        // so a single burst genuinely covers more ground instead of re-targeting as often
+        a.wanderX = clamp(P.x + (Math.random()<0.5?-1:1)*rand(700,1600), 60, WORLD_W-60);
+        a.stateT = rand(0.8,1.6);
       }
-      const vx = clamp((a.wanderX - a.x)*6, threatened ? -3100 : -2400, threatened ? 3100 : 2400);
+      const vx = clamp((a.wanderX - a.x)*6, threatened ? -3400 : -2700, threatened ? 3400 : 2700);
       a.x += vx*dt;
       a.facing = vx >= 0 ? 1 : -1;
       a.atkCd -= dt;
