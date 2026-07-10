@@ -676,7 +676,7 @@ let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = 
 let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
 let mirrorBeam = null;   // Maeve's braced shield reflects an active second beam segment — set fresh each frame it's live
 let deeps = [], fishes = [];
-let trains = [], tanks = [], shells = [], sharks = [];
+let trains = [], tanks = [], sharks = [];
 let atrainDebris = [];   // A-Train's thrown-rubble answer to a player who just stays airborne
 let lamplighters = [], fireballs = [];
 // each of these only starts ticking once its kill-threshold gate opens (see the spawn director),
@@ -995,7 +995,7 @@ function trainCarDeath(t, i, cxw) {
     if (leftDead && rightDead) trainCarDeath(t, j, trainCarX(t, j));
   }
 }
-// ─── Tanks: late-game armor — slow, tough, shells that blow chunks out of buildings ───
+// ─── Tanks: armor escalation — slow, tough, fires rockets once actually aimed and on-screen ───
 function spawnTank() {
   const side = Math.random()<0.5 ? -1 : 1;
   tanks.push({ x: clamp(P.x + side*(VW*0.6+300), 120, WATER_X-160), y: GROUND_Y,
@@ -1005,10 +1005,10 @@ function tankDeath(tk) {
   if (tk.dead) return;
   tk.dead = true;
   addKill(); addDamage(4e6);
+  // explode() already leaves its own transient scorch mark — this used to stack a second, bigger
+  // one on top of it, which is exactly the "lingering oval" that made tank kills look messier than
+  // every other explosion in the game
   explode(tk.x, tk.y-16*TANK_SCALE, 85, 0.5, false, 0.9);
-  // transient, not baked — tanks spawn often enough now that a permanent mark per kill stacked
-  // into a solid black blotch on any street the player kept fighting in
-  flashScorch(tk.x, GROUND_Y, 46);
   for (let k=0;k<6;k++) debris.push({ x: tk.x+rand(-20,20)*TANK_SCALE, y: tk.y-16*TANK_SCALE, vx: rand(-220,220), vy: rand(-320,-80),
     rot: rand(0,7), vr: rand(-6,6), r: rand(4,9), c: '#2c352f', life: rand(1.5,3), heavy: true });
   shake(14); freezeT = Math.max(freezeT, 0.05);
@@ -2962,7 +2962,6 @@ function update(dt) {
     if (l.atkCd <= 0 && fireballLockout <= 0) {
       const a = Math.atan2(dy,dx);
       fireballs.push({ x: l.x, y: l.y, vx: Math.cos(a)*980, vy: Math.sin(a)*980, life: 2.4 });
-      sfxDash();
       l.atkCd = rand(0.7, 1);   // twice as frequent
     }
   }
@@ -3037,40 +3036,21 @@ function update(dt) {
     let da = want - tk.turA;
     while (da > Math.PI) da -= Math.PI*2; while (da < -Math.PI) da += Math.PI*2;
     tk.turA += clamp(da, -1.6*dt, 1.6*dt);
-    if (tk.fireCd <= 0 && Math.abs(tk.x-P.x) < VW*0.75) {
-      tk.fireCd = rand(3.2, 4.6); tk.muzzle = 0.08;
-      shells.push({ x: tk.x + Math.cos(tk.turA)*44*TANK_SCALE, y: tk.y - 30*TANK_SCALE + Math.sin(tk.turA)*44*TANK_SCALE,
-        vx: Math.cos(tk.turA)*1200, vy: Math.sin(tk.turA)*1200, life: 2.2 });
+    // only fires once it's actually visible and the turret has actually caught up to aim, not just
+    // started swinging toward you — that (plus firing at all off-screen) was landing shells on empty
+    // street/rooftops with nothing to hit, reading as pointless random explosions
+    const onScreen = (tk.x - camX) > -90*TANK_SCALE && (tk.x - camX) < VW + 90*TANK_SCALE;
+    const aimed = Math.abs(da) < 0.12;
+    if (tk.fireCd <= 0 && onScreen && aimed) {
+      tk.fireCd = rand(2.8, 4); tk.muzzle = 0.08;
+      // fires into the same rocket system helicopters use — faster, straighter (barely any homing
+      // correction, since it's only launched once already aimed dead-on), hits harder
+      rockets.push({ x: tk.x + Math.cos(tk.turA)*44*TANK_SCALE, y: tk.y - 30*TANK_SCALE + Math.sin(tk.turA)*44*TANK_SCALE,
+        vx: Math.cos(tk.turA)*1150, vy: Math.sin(tk.turA)*1150, life: 2.2, t: 0, tank: true });
       noiseBurst(0.3, 500, 0.2); thump(60, 0.3, 0.25); shake(4);
     }
   }
   tanks = tanks.filter(t => !t.dead);
-  for (const sh of shells) {
-    sh.life -= dt; sh.vy += 140*dt;
-    sh.x += sh.vx*dt; sh.y += sh.vy*dt;
-    if (Math.random() < 0.6) smokes.push({x:sh.x, y:sh.y, r:rand(3,6), vr:rand(8,16), vy:0, life:rand(0.25,0.5), c:'rgba(120,110,116,'});
-    let boom = false;
-    if (dist2(sh.x,sh.y,P.x,P.y) < 30*30) boom = true;
-    if (sh.y >= GROUND_Y - 4) boom = true;
-    if (sh.life <= 0) boom = true;
-    // no longer detonates against the first building it grazes — it used to burn its whole shot on
-    // whatever happened to be between the tank and you, so it never actually got a chance to be a
-    // threat. cellFrac 0: tank fire knocks YOU around but never wrecks buildings or kills civilians —
-    // the city's destruction stays entirely Homelander's work
-    if (boom) {
-      const by = Math.min(sh.y, GROUND_Y-4);
-      explode(sh.x, by, 78, 0, true);
-      // a shell should hit noticeably harder than a generic blast — explode()'s own push is the
-      // same flat force every explosion gets, so stack a real punch on top of it here
-      if (dist2(P.x,P.y,sh.x,by) < 130*130) {
-        const d = Math.max(Math.hypot(P.x-sh.x, P.y-by), 20);
-        P.vx += (P.x-sh.x)/d*900; P.vy += (P.y-by)/d*900 - 140;
-        P.knockT = Math.max(P.knockT, 0.35);
-      }
-      sh.life = 0;
-    }
-  }
-  shells = shells.filter(s => s.life > 0);
 
   // ── sharks: hunt the player the moment he's in the water; blood just draws more of them in ──
   if (sharks.length < 7 && waterBloods.length > 2 && P.x > WATER_X - VW && Math.random() < dt*0.7) spawnShark();
@@ -3114,8 +3094,11 @@ function update(dt) {
     if (r.gone) continue;   // already detonated mid-air by the laser this frame
     r.t += dt; r.life -= dt;
     const dx = P.x - r.x, dy = P.y - r.y, d = Math.hypot(dx,dy)||1;
-    r.vx += (dx/d)*150*dt; r.vy += (dy/d)*150*dt;
-    const sp = Math.hypot(r.vx,r.vy), mx = 660;
+    // tank rockets barely correct course — they're only launched once the turret is already dead-on,
+    // so they fly a straight line instead of curving in like the heli's mildly-homing ones
+    const homingAccel = r.tank ? 20 : 150, mx = r.tank ? 1150 : 660;
+    r.vx += (dx/d)*homingAccel*dt; r.vy += (dy/d)*homingAccel*dt;
+    const sp = Math.hypot(r.vx,r.vy);
     if (sp > mx) { r.vx *= mx/sp; r.vy *= mx/sp; }
     r.x += r.vx*dt; r.y += r.vy*dt;
     if (Math.random()<0.9) smokes.push({x:r.x, y:r.y, r:rand(4,8), vr:rand(10,20), vy:0, life:rand(0.35,0.7), c:'rgba(95,88,96,'});
@@ -3123,7 +3106,18 @@ function update(dt) {
     if (d < 34) boom = true;
     if (r.y >= GROUND_Y - 6) boom = true;
     if (r.life <= 0) boom = true;
-    if (boom) { r.gone = true; explode(r.x, Math.min(r.y, GROUND_Y-4), 46, 0, true); }   // no building/civilian damage
+    if (boom) {
+      r.gone = true;
+      const by = Math.min(r.y, GROUND_Y-4);
+      explode(r.x, by, 46, 0, true);   // no building/civilian damage
+      if (r.tank && dist2(P.x,P.y,r.x,by) < 130*130) {
+        // hits harder than a helicopter's rocket — explode()'s own push is the same flat force
+        // every explosion gets, so stack a real punch on top of it here, same as the old shells did
+        const kd = Math.max(Math.hypot(P.x-r.x, P.y-by), 20);
+        P.vx += (P.x-r.x)/kd*1100; P.vy += (P.y-by)/kd*1100 - 140;
+        P.knockT = Math.max(P.knockT, 0.35);
+      }
+    }
   }
   rockets = rockets.filter(r => !r.gone);
 
@@ -4605,13 +4599,6 @@ function drawFx() {
     if (lb.hail) { g.addColorStop(0,'rgba(255,255,255,0.98)'); g.addColorStop(0.5,'rgba(255,240,160,0.7)'); g.addColorStop(1,'rgba(255,220,120,0)'); }
     else { g.addColorStop(0,'rgba(255,250,220,0.95)'); g.addColorStop(1,'rgba(255,230,140,0)'); }
     cx.fillStyle = g; cx.beginPath(); cx.arc(x,y,r,0,7); cx.fill();
-  }
-  // tank shells: dark slug with a hot tracer tail
-  for (const sh of shells) {
-    cx.save(); cx.translate(sh.x - camX, sh.y - camY); cx.rotate(Math.atan2(sh.vy,sh.vx));
-    cx.fillStyle = 'rgba(255,190,80,0.8)'; cx.fillRect(-16, -1.5, 12, 3);
-    cx.fillStyle = '#2a2f2c'; cx.fillRect(-6, -3, 14, 6);
-    cx.restore();
   }
   // rockets: unmistakably hostile — red glowing warhead, flame, thick trail
   for (const r of rockets) {
