@@ -183,7 +183,7 @@ function roofChunkPop(rc, wx, wy) {
     const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
     const roofStyle = pickRoofStyle(archetype), rubbleSeed = Math.random();
     fgBuildings.push({x, w, h, cols, rows, roofY: GROUND_Y-h, shade: randi(0,2), wins, cells,
-      destroyed: 0, collapsed: false, rubbleSeed, dirty: false, supT: 0,
+      destroyed: 0, collapsed: false, rubbleSeed, dirty: false, supActive: false, supT: 0,
       ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07,
       watertower: w > 200 && Math.random()<0.08, archetype, roofStyle, roofChunks: makeRoofChunks(w, roofStyle, rubbleSeed)});
     x += w + rand(180, 460);
@@ -209,7 +209,7 @@ function applyTowerFields(b) {
   Object.assign(b, {
     h, rows, roofY: GROUND_Y - h, cells, wins, shade: 0, archetype: 'tower', roofStyle: null, roofChunks: [],
     ant: false, ac: -1, watertower: false, burning: false,
-    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supActive: false, supT: 0,
     isTower: true, glassIntact: true, collapsedAtT: undefined
   });
 }
@@ -242,7 +242,7 @@ function respawnBuilding(b) {
   const roofStyle = pickRoofStyle(archetype), rubbleSeed = Math.random();
   Object.assign(b, {
     h, rows, roofY: GROUND_Y-h, cells, wins, shade: randi(0,2),
-    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed, dirty: false, supT: 0,
+    destroyed: 0, collapsed: false, collapsing: false, rubbleSeed, dirty: false, supActive: false, supT: 0,
     ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,b.w-50) : -1, burning: Math.random()<0.07,
     watertower: b.w > 200 && Math.random()<0.08, archetype, roofStyle, roofChunks: makeRoofChunks(b.w, roofStyle, rubbleSeed),
     collapsedAtT: undefined, respawnGate: undefined
@@ -258,7 +258,7 @@ function makeShipPiece(x, cols, rows, opts) {
   for (let c=0;c<cols/2;c++) for (let r=0;r<rows/2;r++)
     if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
   const b = {x, w, h, cols, rows, roofY: GROUND_Y-h, shade: 0, wins, cells: new Float32Array(cols*rows),
-    destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supT: 0,
+    destroyed: 0, collapsed: false, rubbleSeed: Math.random(), dirty: false, supActive: false, supT: 0,
     ant: !!(opts&&opts.ant), ac: -1, burning: false, ship: true, bow: !!(opts&&opts.bow), stern: !!(opts&&opts.stern),
     roofStyle: null, roofChunks: []};
   fgBuildings.push(b); shipPieces.push(b);
@@ -273,7 +273,7 @@ function makeShipPiece(x, cols, rows, opts) {
 function resetShip() {
   for (const b of shipPieces) {
     b.cells.fill(0); b.destroyed = 0; b.collapsed = false; b.collapsing = false;
-    b.dirty = false; b.supT = 0; b.burning = false;
+    b.dirty = false; b.supActive = false; b.supT = 0; b.burning = false;
     b.wins = [];
     for (let c=0;c<b.cols/2;c++) for (let r=0;r<b.rows/2;r++)
       if (Math.random()<0.6) b.wins.push({c, r, warm:Math.random()<0.7, civ:Math.random()<0.3});
@@ -309,15 +309,33 @@ const containers = [];
 (function genDock(){
   // just the train's own four colors — its red, its blue, its stripe gold, and one grey
   const CONTAINER_COLORS = ['#5d2d33','#3d4a5d','#c98a3a','#4a5568'];
+  // pure per-container random picks let the same color (often one of the two grey/blue-grey ones)
+  // land right next to itself, vertically in a stack or horizontally between stacks — pick avoiding
+  // both neighbors so no two touching crates ever match
+  function pickColor(exclude) {
+    let c;
+    do { c = CONTAINER_COLORS[randi(0,3)]; } while (exclude.includes(c));
+    return c;
+  }
   let x = CITY_W + 140;
+  let prevStackColors = [];
   while (x < WATER_X - 300) {
     if (Math.random() < 0.92) {
       const stack = randi(3, 7);
-      for (let s=0;s<stack;s++) containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
-        c: CONTAINER_COLORS[randi(0,3)], dead: false, vy: 0, vx: 0,
-        hp: 170, maxHp: 170, settled: true });
+      const curColors = [];
+      for (let s=0;s<stack;s++) {
+        const exclude = [];
+        if (s > 0) exclude.push(curColors[s-1]);
+        if (prevStackColors[s] !== undefined) exclude.push(prevStackColors[s]);
+        const c = pickColor(exclude);
+        curColors.push(c);
+        containers.push({ x, y: GROUND_Y - (s+1)*46, w: 118, h: 46,
+          c, dead: false, vy: 0, vx: 0,
+          hp: 170, maxHp: 170, settled: true });
+      }
+      prevStackColors = curColors;
       x += 122;
-    } else x += rand(30, 70);
+    } else { x += rand(30, 70); prevStackColors = []; }
   }
 })();
 function containerBoom(ct) {
@@ -467,7 +485,14 @@ function audioBoot() {
   if (AC) return;
   try {
     AC = new (window.AudioContext||window.webkitAudioContext)();
-    master = AC.createGain(); master.gain.value = 0.4; master.connect(AC.destination);
+    master = AC.createGain(); master.gain.value = 0.4;
+    // limiter on the bus — the dock especially can fire several booms/thumps in the same frame
+    // (containers, sharks, tanks all going off near each other), and without this they just sum
+    // and clip at the destination, which reads as crackle/pop rather than "loud"
+    const limiter = AC.createDynamicsCompressor();
+    limiter.threshold.value = -20; limiter.knee.value = 14; limiter.ratio.value = 14;
+    limiter.attack.value = 0.003; limiter.release.value = 0.25;
+    master.connect(limiter); limiter.connect(AC.destination);
     const osc = AC.createOscillator(); osc.type='triangle'; osc.frequency.value=68;
     const lfo = AC.createOscillator(); lfo.frequency.value=17;
     const lfoG = AC.createGain(); lfoG.gain.value=10;
@@ -1006,7 +1031,7 @@ const TANK_SCALE = 1.7;    // was barely readable next to everything else at str
 const DEEP_SCALE = 1.45;   // his submerged fin-and-shadow silhouette (his most common state) read too small
 function destroyCell(b, i, wx, wy, quiet) {
   if (b.cells[i] >= 1) return;
-  b.cells[i] = 1; b.destroyed++; b.dirty = true;
+  b.cells[i] = 1; b.destroyed++; b.dirty = true; b.supActive = true;
   addDamage(CELL_COST);
   const ci = i % b.cols, cj = Math.floor(i / b.cols);
   killWindowCiv(b, ci, cj);
@@ -1089,7 +1114,7 @@ function runSupport(b) {
     }
   }
   if (fell) { sfxCrack(); if (!b.collapsed && b.destroyed > b.cols*b.rows*(b.ship ? 0.35 : 0.62)) collapseBuilding(b); }
-  b.dirty = fell;   // cascades keep checking
+  b.supActive = fell;   // cascades keep checking (b.dirty stays permanently true once damaged — it gates rendering, not this recheck)
 }
 function collapseBuilding(b) {
   // don't swap to rubble instantly — sink/crumble over collapseDur, then finalize
@@ -1520,7 +1545,7 @@ function update(dt) {
       if (b.collapseT >= b.collapseDur) { b.collapsing = false; b.collapsed = true; b.collapsedAtT = gameT; b.respawnGate = rand(90, 150); }
       continue;
     }
-    if (b.collapsed || !b.dirty) continue;
+    if (b.collapsed || !b.supActive) continue;
     b.supT -= dt;
     if (b.supT <= 0) { b.supT = 0.13; runSupport(b); }
   }
@@ -2198,23 +2223,30 @@ function update(dt) {
       ct.x = clamp(ct.x, CITY_W + 20, WATER_X - ct.w - 20);
     }
     if (ct.settled) continue;
-    let restY = GROUND_Y - ct.h;
+    // restY tracks the nearest support below, but that support might itself still be mid-fall
+    // (e.g. the container directly under it was just destroyed) — if we lock `settled` onto a
+    // support that hasn't finished sinking yet, this container freezes hovering right above the
+    // gap and never re-checks, since `settled` short-circuits the whole loop above. only allow
+    // settling once the thing we're actually resting on (or the ground, which never moves) is stable.
+    let restY = GROUND_Y - ct.h, restStable = true;
     for (const o of containers) {
       if (o === ct || o.dead) continue;
-      if (Math.abs(o.x - ct.x) < ct.w*0.7 && o.y > ct.y) restY = Math.min(restY, o.y - ct.h);
+      if (Math.abs(o.x - ct.x) < ct.w*0.7 && o.y > ct.y) {
+        const cand = o.y - ct.h;
+        if (cand < restY) { restY = cand; restStable = o.settled; }
+      }
     }
     if (ct.y < restY - 0.5) {
       ct.vy += 1500*dt;
       ct.y += ct.vy*dt;
       if (ct.y >= restY) {
-        ct.y = restY;
-        if (ct.vy > 240) {
+        ct.y = restY; ct.vy = 0;
+        if (restStable) {
           thump(80, 0.2, 0.2); shake(4);
           for (const c of civs) if (!c.dead && !c.swim && c.x > ct.x-8 && c.x < ct.x+ct.w+8 && Math.abs(c.y - (ct.y+ct.h)) < 30) { c.dead=true; gibBurst(c.x,c.y-14,1.2); addKill(); }
           for (const g of grunts) if (!g.dead && !g.air && !g.boatG && g.x > ct.x-8 && g.x < ct.x+ct.w+8 && Math.abs(g.y - (ct.y+ct.h)) < 30) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
+          ct.settled = true;
         }
-        ct.vy = 0;
-        ct.settled = true;
       }
     } else if (ct.y > restY + 0.5) {
       // ended up embedded in whatever it should be resting on — e.g. a laser shove landed it
@@ -2222,8 +2254,9 @@ function update(dt) {
       // should never leave something floating OR sunk into its own support; pop it up onto the
       // surface instead of leaving it visibly clipped, which is what "not following normal
       // gravity physics" actually was
-      ct.y = restY; ct.vy = 0; ct.settled = true;
-    } else {
+      ct.y = restY; ct.vy = 0;
+      if (restStable) ct.settled = true;
+    } else if (restStable) {
       ct.settled = true;
     }
   }
@@ -2421,7 +2454,10 @@ function update(dt) {
     if (firing && P.x > WATER_X + 260 + 300 && !a.fleeing) { a.fleeing = true; a.fleeT = 3; }
     if (a.fleeing) {
       a.x -= 2200*dt; a.facing = -1; a.fleeT -= dt;
-      if (a.fleeT <= 0 || Math.abs(a.x-P.x) > VW*1.15 || P.x < WATER_X - 100) {
+      // same fix as Deep's mirrored retreat below: this triggers from the player being far out in
+      // the water already, so an off-screen distance check was true instantly and cancelled the
+      // flee before she moved
+      if (a.fleeT <= 0 || P.x < WATER_X - 100) {
         a.fleeing = false; a.state = 'run'; a.stateT = rand(0.6,1.1); a.wanderX = a.x;
       }
       a.x = clamp(a.x, 40, WATER_X + 260);
@@ -2618,7 +2654,12 @@ function update(dt) {
     if (firing && P.x < CITY_W - 250 && !dp.fleeing) { dp.fleeing = true; dp.fleeT = 3; }
     if (dp.fleeing) {
       dp.x += 1900*dt; dp.facing = 1; dp.fleeT -= dt;
-      if (dp.fleeT <= 0 || Math.abs(dp.x-P.x) > VW*1.15 || P.x > WATER_X + 100) {
+      // this triggers from a snipe deep in the city, so the gap to the player is already huge from
+      // frame one — an off-screen distance check here was satisfied instantly, cancelling the flee
+      // before he moved at all and dropping him right back into 'lurk', which chases toward the
+      // player and pulled him straight back toward the dock. the fleeT timer alone is enough to
+      // bound how long the retreat lasts.
+      if (dp.fleeT <= 0 || P.x > WATER_X + 100) {
         dp.fleeing = false; dp.state = 'lurk';
       }
       dp.y += ((GROUND_Y + 55) - dp.y) * Math.min(1, dt*4);
@@ -2785,7 +2826,7 @@ function update(dt) {
         embers.push({ x: l.x+Math.cos(ang+spread)*rr, y: l.y+Math.sin(ang+spread)*rr,
           vx: Math.cos(ang+spread)*60, vy: Math.sin(ang+spread)*60-20, life: rand(0.2,0.4), r: rand(1.5,3.5) });
       }
-      const halfAngle = 0.5, range = 260;
+      const halfAngle = 0.5, range = 320;   // a bit longer reach so he doesn't have to close all the way in to threaten
       for (const g of grunts) if (!g.dead) {
         const gdx=g.x-l.x, gdy=(g.y-16)-l.y, gd=Math.hypot(gdx,gdy);
         if (gd<range && Math.abs(angDiff(Math.atan2(gdy,gdx),ang))<halfAngle) { g.dead=true; gibBurst(g.x,g.y-16,1); addKill(); }
@@ -2803,7 +2844,7 @@ function update(dt) {
         P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(8); sfxHit();
         P.vx += (P.x-l.x)/d*500; P.vy += (P.y-l.y)/d*500 - 60;
       }
-      if (l.breatheT <= 0 || d > 320) { l.breathing = false; l.breatheCd = rand(4,6); }
+      if (l.breatheT <= 0 || d > 380) { l.breathing = false; l.breatheCd = rand(4,6); }
       continue;
     }
 
@@ -2828,7 +2869,7 @@ function update(dt) {
     // tight 280, which at the same tangential force orbits fast enough to cross directly over/under
     // the player often, flipping his facing constantly; a wider orbit has much lower angular speed
     // for the same push). he still closes in for the dash/breath, this is just the "circling" radius
-    const desired = 360;
+    const desired = 400;   // a bit further out than before — more room to react to the beam before it's on him
     const closeF = (d - desired)/400;
     l.vx += (dx/d) * closeF * 700*dt; l.vy += (dy/d) * closeF * 700*dt;
     l.vx += (-dy/d) * l.orbitDir * 260*dt; l.vy += (dx/d) * l.orbitDir * 260*dt;
@@ -2836,6 +2877,8 @@ function update(dt) {
     const spL = Math.hypot(l.vx,l.vy), mxL = 710;   // a bit faster again
     if (spL > mxL) { l.vx *= mxL/spL; l.vy *= mxL/spL; }
     if (firing && P.beamEndX !== undefined) {
+      // wider catch radius and a harder juke than Starlight's — he was reported gravitating into
+      // the beam right alongside her instead of actually dodging it
       const bex = P.x + P.facing*6, bey = P.y - 24;
       const bux = P.beamEndX - bex, buy = P.beamEndY - bey;
       const blen = Math.hypot(bux,buy) || 1;
@@ -2845,7 +2888,7 @@ function update(dt) {
       if (proj > 0 && proj < blen+50) {
         const perpX = toLx - nux*proj, perpY = toLy - nuy*proj;
         const perpDist = Math.hypot(perpX,perpY) || 1;
-        if (perpDist < 100) { l.vx += (perpX/perpDist)*900*dt; l.vy += (perpY/perpDist)*900*dt; }
+        if (perpDist < 130) { l.vx += (perpX/perpDist)*1100*dt; l.vy += (perpY/perpDist)*1100*dt; }
       }
     }
     l.x = clamp(l.x + l.vx*dt, 60, WORLD_W-60);
@@ -2857,7 +2900,7 @@ function update(dt) {
     l.dashCd -= dt;
     if (l.dashCd <= 0 && d < 340) { l.dashing = true; l.dashT = 0.35; l.dashVx = (dx/d)*1500; l.dashVy = (dy/d)*1500; }
     l.breatheCd -= dt;
-    if (l.breatheCd <= 0 && d < 250) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
+    if (l.breatheCd <= 0 && d < 320) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
     l.atkCd -= dt;
     if (l.atkCd <= 0 && fireballLockout <= 0) {
       const a = Math.atan2(dy,dx);
@@ -3746,7 +3789,11 @@ function drawDeep(dp) {
     // out of the water: full figure — green suit, dorsal fin, gills
     cx.fillStyle = 'rgba(47,191,154,0.35)';
     cx.beginPath(); cx.arc(x, y-18, 34, 0, 7); cx.fill();
-    cx.save(); cx.translate(x, y); cx.scale(dp.facing*BOSS_SCALE*DEEP_SCALE, BOSS_SCALE*DEEP_SCALE);
+    // full-body form uses the same BOSS_SCALE every other boss renders at — DEEP_SCALE stays
+    // reserved for the submerged fin/shadow silhouette above, which is a different, smaller
+    // shape that needed its own readability bump; stacking both here made him visibly larger
+    // than every other boss instead of matching them
+    cx.save(); cx.translate(x, y); cx.scale(dp.facing*BOSS_SCALE, BOSS_SCALE);
     if (dp.state === 'dolphin' && dp.stateT <= 0) {
       // the dolphin he's riding
       cx.fillStyle = '#7d8a94';
@@ -4167,6 +4214,11 @@ function drawLamplighter(l) {
   cx.fillRect(-7, -18, 14, 26);
   cx.strokeStyle = '#2a1610'; cx.lineWidth = 6;
   cx.beginPath(); cx.moveTo(-3, 8); cx.lineTo(-5, 24); cx.moveTo(3, 8); cx.lineTo(6, 22); cx.stroke();
+  // arms — he was the only boss drawn without any, reading as an armless torso next to Starlight/Maeve
+  cx.beginPath();
+  if (l.breathing) { cx.moveTo(5,-14); cx.lineTo(16,-10); }   // reaching out toward the breath cone
+  else { cx.moveTo(5,-14); cx.lineTo(10,0); }
+  cx.moveTo(-5,-14); cx.lineTo(-9,-2); cx.stroke();
   cx.fillStyle = '#d4a888'; cx.beginPath(); cx.arc(0, -24, 6.5, 0, 7); cx.fill();
   cx.fillStyle = '#1c0e08'; cx.beginPath(); cx.arc(0, -26, 6.6, Math.PI*1.05, Math.PI*1.95); cx.fill();
   // ember-glow chest, pulsing — his signature instead of Starlight's star
