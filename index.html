@@ -155,12 +155,6 @@
   .boss-card.b-lamp .portrait { background:radial-gradient(circle, rgba(255,138,58,0.24), transparent 70%); }
   .boss-card.b-lamp .tag { color:#ff8a3a; }
 
-  /* landmark callout */
-  .landmark { padding:20px 22px; display:flex; gap:18px; align-items:center; }
-  .landmark .portrait { flex:0 0 auto; width:70px; height:90px; }
-  .landmark h3 { margin:0 0 6px; font-size:15px; color:#f2ede2; }
-  .landmark p { margin:0; font-size:13.5px; line-height:1.55; color:rgba(242,237,226,0.82); }
-
   footer { margin-top:56px; text-align:center; font-size:12px; letter-spacing:1px; color:rgba(242,237,226,0.4); }
 </style>
 </head>
@@ -219,14 +213,6 @@
       </div>
       <div class="card beast"><canvas class="portrait" id="av-supe" width="60" height="60"></canvas>
         <div class="body"><span class="tag">Airspace</span><h3>Knockoff Supes</h3><p>Other "heroes." Capes, powers, a little fight in them. None of it adds up to anything here.</p></div>
-      </div>
-    </div>
-
-    <div class="card landmark" style="margin-top:14px;">
-      <canvas class="portrait" id="av-tower" width="70" height="90"></canvas>
-      <div>
-        <h3>Vought Tower</h3>
-        <p>The gold spire at the dead center of the skyline, with a peaked glass roof up top — the tallest thing standing, and where the game opens with you bursting up through it. Hold the laser on the glass long enough and it shatters on its own, no need to bring the whole tower down first. Level the tower itself and the city eventually puts it back up.</p>
       </div>
     </div>
   </section>
@@ -338,19 +324,6 @@
     cx.fillStyle = '#6a7d89';
     cx.beginPath(); cx.moveTo(-4,-6); cx.quadraticCurveTo(2,-20,8,-6); cx.closePath(); cx.fill();
   }
-  function drawTowerAvatar(cx) {
-    // matches the in-game peaked glass roof: a single gold chevron sitting on the roofline,
-    // sloping down to the eaves either side, glass panel filling the triangle beneath it
-    cx.fillStyle = '#8a6a28'; cx.fillRect(-18,-8,36,42);
-    cx.fillStyle = '#e8c04a'; cx.fillRect(-18,-8,36,9);
-    cx.fillStyle = 'rgba(255,240,200,0.5)';
-    for (let ty=1;ty<34;ty+=9) cx.fillRect(-13,1+ty,26,4);
-    const apexX=0, apexY=-38, baseLX=-19, baseRX=19, baseY=-8;
-    cx.fillStyle = 'rgba(180,225,240,0.45)';
-    cx.beginPath(); cx.moveTo(apexX,apexY); cx.lineTo(baseLX,baseY); cx.lineTo(baseRX,baseY); cx.closePath(); cx.fill();
-    cx.strokeStyle = '#e8c04a'; cx.lineWidth = 3.4; cx.lineJoin = 'round';
-    cx.beginPath(); cx.moveTo(baseLX,baseY); cx.lineTo(apexX,apexY); cx.lineTo(baseRX,baseY); cx.stroke();
-  }
 
   // ── bosses — real coordinates from each character's actual draw function, just re-centered
   // and scaled for a small portrait, so the proportions read correctly instead of guessed ──
@@ -434,7 +407,7 @@
     cx.restore();
   }
 
-  const simpleAvatars = { 'av-grunt': drawGruntAvatar, 'av-civ': drawCivAvatar, 'av-supe': drawSupeAvatar, 'av-shark': drawSharkAvatar, 'av-tower': drawTowerAvatar };
+  const simpleAvatars = { 'av-grunt': drawGruntAvatar, 'av-civ': drawCivAvatar, 'av-supe': drawSupeAvatar, 'av-shark': drawSharkAvatar };
   const bossAvatars = { 'av-starlight': drawStarlightAvatar, 'av-atrain': drawATrainAvatar, 'av-maeve': drawMaeveAvatar, 'av-deep': drawDeepAvatar, 'av-lamp': drawLampAvatar };
   for (const id in simpleAvatars) { const cx = simpleCtx(id); if (cx) simpleAvatars[id](cx); }
   for (const id in bossAvatars) { const cx = rawCtx(id); if (cx) bossAvatars[id](cx); }
