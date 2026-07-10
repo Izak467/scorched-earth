@@ -727,10 +727,14 @@ function panicNear(x, r) {
 
 function spawnGrunt(air) {
   const side = Math.random()<0.5 ? -1 : 1;
-  const x = clamp(P.x + side * rand(VW*0.45, VW*0.5+700), 60, WORLD_W-60);
+  let x = clamp(P.x + side * rand(VW*0.45, VW*0.5+700), 60, WORLD_W-60);
   let y = GROUND_Y;
-  // a ground spawn out over the water becomes a patrol-boat gunner instead
-  const boatG = !air && x > WATER_X + 60;
+  // a ground spawn out over the water becomes a patrol-boat gunner instead — only some of the time,
+  // the water was getting packed with boats stacking up on top of the container/Deep fights already
+  // happening out there. the rest fall back onto the dock instead of out on the water.
+  const wantsBoat = !air && x > WATER_X + 60;
+  const boatG = wantsBoat && Math.random() < 0.55;
+  if (wantsBoat && !boatG) x = clamp(x, 40, WATER_X);
   if (air) y = GROUND_Y - rand(260, 780);
   else if (boatG) y = GROUND_Y - 2;
   else if (Math.random() < 0.55) {
@@ -937,7 +941,7 @@ function spawnLamplighter() {
   lamplighters.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
     vx: 0, vy: 0, hp: 1250, maxHp: 1250, dead: false, orbitDir,
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.6,2.4),
-    breathing: false, breatheT: 0, breatheCd: rand(3.5,5), breatheHitCd: 0, atkCd: rand(1,1.6),
+    breathing: false, breatheT: 0, breatheCd: rand(3.5,5), breatheHitCd: 0, atkCd: rand(0.5,0.8),
     smokeT: 0, flash: 0, launchedT: 0, facing: 1 });
 }
 function lamplighterDeath(l) {
@@ -2938,7 +2942,7 @@ function update(dt) {
       const a = Math.atan2(dy,dx);
       fireballs.push({ x: l.x, y: l.y, vx: Math.cos(a)*980, vy: Math.sin(a)*980, life: 2.4 });
       sfxDash();
-      l.atkCd = rand(1.4, 2);
+      l.atkCd = rand(0.7, 1);   // twice as frequent
     }
   }
   lamplighters = lamplighters.filter(l => !l.dead);
