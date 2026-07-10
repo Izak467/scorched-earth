@@ -200,7 +200,7 @@
 
   <section id="city">
     <div class="sec-head"><span class="sec-num">02</span><h2>The City</h2></div>
-    <p class="lede">Weakest to strongest. None of it can touch you — it's here to break.</p>
+    <p class="lede">Weakest to strongest. Most of it can't touch you — it's here to break. A couple of them can actually land a hit.</p>
     <div class="bestiary">
       <div class="card beast"><canvas class="portrait" id="av-civ" width="60" height="60"></canvas>
         <div class="body"><span class="tag">Fodder</span><h3>Civilians</h3><p>Running doesn't make you a story. It just makes you a moving target, which honestly I prefer.</p></div>
@@ -210,6 +210,12 @@
       </div>
       <div class="card beast"><canvas class="portrait" id="av-shark" width="60" height="60"></canvas>
         <div class="body"><span class="tag">The Bay</span><h3>Sharks</h3><p>Once the blood's in the water, they come on their own. I don't even have to finish the job myself.</p></div>
+      </div>
+      <div class="card beast"><canvas class="portrait" id="av-heli" width="60" height="60"></canvas>
+        <div class="body"><span class="tag">Airspace</span><h3>Helicopters</h3><p>The government's toy. It thinks it matters because it's armed. Its rockets actually land sometimes — I'll give it that much.</p></div>
+      </div>
+      <div class="card beast"><canvas class="portrait" id="av-tank" width="60" height="60"></canvas>
+        <div class="body"><span class="tag">Escalation</span><h3>Tanks</h3><p>Eventually they send armor — rockets that actually knock me around when they connect. Almost respectable.</p></div>
       </div>
       <div class="card beast"><canvas class="portrait" id="av-supe" width="60" height="60"></canvas>
         <div class="body"><span class="tag">Airspace</span><h3>Knockoff Supes</h3><p>Other "heroes." Capes, powers, a little fight in them. None of it adds up to anything here.</p></div>
@@ -324,6 +330,22 @@
     cx.fillStyle = '#6a7d89';
     cx.beginPath(); cx.moveTo(-4,-6); cx.quadraticCurveTo(2,-20,8,-6); cx.closePath(); cx.fill();
   }
+  function drawHeliAvatar(cx) {
+    cx.fillStyle = '#2c352f';
+    cx.beginPath(); cx.ellipse(0,0,17,10,0,0,7); cx.fill();
+    cx.fillStyle = '#232a26'; cx.fillRect(-34,-3,20,5);
+    cx.fillStyle = 'rgba(150,210,235,0.55)'; cx.beginPath(); cx.ellipse(7,-2,7,5,0,0,7); cx.fill();
+    cx.strokeStyle = 'rgba(210,215,220,0.75)'; cx.lineWidth = 2.4;
+    cx.beginPath(); cx.moveTo(-26,-12); cx.lineTo(26,-12); cx.stroke();
+    cx.fillStyle = '#1a1f1c'; cx.fillRect(-1,-12,2,4);
+  }
+  function drawTankAvatar(cx) {
+    cx.fillStyle = '#1a1f1c'; cx.fillRect(-22,-2,44,7);
+    cx.fillStyle = '#2c352f';
+    cx.beginPath(); cx.moveTo(-20,-2); cx.lineTo(20,-2); cx.lineTo(15,-11); cx.lineTo(-17,-11); cx.closePath(); cx.fill();
+    cx.fillStyle = '#232b26'; cx.beginPath(); cx.ellipse(0,-15,9,5.5,0,0,7); cx.fill();
+    cx.fillStyle = '#1a1f1c'; cx.fillRect(6,-17,22,3.5);
+  }
 
   // ── bosses — real coordinates from each character's actual draw function, just re-centered
   // and scaled for a small portrait, so the proportions read correctly instead of guessed ──
@@ -407,7 +429,7 @@
     cx.restore();
   }
 
-  const simpleAvatars = { 'av-grunt': drawGruntAvatar, 'av-civ': drawCivAvatar, 'av-supe': drawSupeAvatar, 'av-shark': drawSharkAvatar };
+  const simpleAvatars = { 'av-grunt': drawGruntAvatar, 'av-civ': drawCivAvatar, 'av-supe': drawSupeAvatar, 'av-shark': drawSharkAvatar, 'av-heli': drawHeliAvatar, 'av-tank': drawTankAvatar };
   const bossAvatars = { 'av-starlight': drawStarlightAvatar, 'av-atrain': drawATrainAvatar, 'av-maeve': drawMaeveAvatar, 'av-deep': drawDeepAvatar, 'av-lamp': drawLampAvatar };
   for (const id in simpleAvatars) { const cx = simpleCtx(id); if (cx) simpleAvatars[id](cx); }
   for (const id in bossAvatars) { const cx = rawCtx(id); if (cx) bossAvatars[id](cx); }
