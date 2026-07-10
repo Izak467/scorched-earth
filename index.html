@@ -10,7 +10,7 @@
   html,body {
     margin:0; padding:0; background:#0a0912; color:#f2ede2;
     font-family: Georgia, 'Times New Roman', serif;
-    overflow-x:hidden;
+    overflow-x:hidden; scroll-behavior:smooth;
   }
   a { color:inherit; }
 
@@ -37,19 +37,19 @@
     100% { transform:translateY(-110vh) translateX(var(--drift,20px)); opacity:0; }
   }
 
-  .wrap { position:relative; max-width:920px; margin:0 auto; padding:0 20px 60px; }
+  .wrap { position:relative; max-width:980px; margin:0 auto; padding:0 20px 60px; }
 
   /* ── hero ── */
-  .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:56px 16px 8px; gap:14px; }
+  .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:50px 16px 10px; gap:14px; }
   .homelander {
-    width:min(52vw, 260px); border-radius:14px;
+    width:min(48vw, 230px); border-radius:14px;
     box-shadow: 0 0 0 1px rgba(255,120,60,0.25), 0 0 40px rgba(255,60,20,0.35), 0 14px 34px rgba(0,0,0,0.6);
     -webkit-mask-image: linear-gradient(180deg, black 78%, transparent 100%);
     mask-image: linear-gradient(180deg, black 78%, transparent 100%);
   }
   .title {
     margin:0; font-weight:900; letter-spacing:6px;
-    font-size:clamp(38px, 8.5vw, 96px); line-height:0.95;
+    font-size:clamp(36px, 8vw, 88px); line-height:0.95;
     background:linear-gradient(180deg, #fff6d6 0%, #ffd84d 18%, #ff9d2e 40%, #ff5a1f 62%, #e0311a 82%, #7a160f 100%);
     -webkit-background-clip:text; background-clip:text; color:transparent;
     animation: flicker 2.6s ease-in-out infinite;
@@ -60,11 +60,11 @@
     60% { filter: drop-shadow(0 0 12px rgba(255,110,40,0.4)) drop-shadow(0 0 30px rgba(255,60,20,0.25)); }
   }
   .voice {
-    max-width:560px; font-size:17px; line-height:1.55; font-style:italic;
+    max-width:560px; font-size:16.5px; line-height:1.55; font-style:italic;
     color:rgba(242,237,226,0.9); text-shadow:0 2px 8px rgba(0,0,0,0.6);
   }
   .play-btn {
-    display:inline-block; margin-top:6px; text-decoration:none;
+    display:inline-block; margin-top:4px; text-decoration:none;
     font-family:Georgia,serif; font-weight:bold; font-size:20px; letter-spacing:3px;
     color:#1a1206; background:linear-gradient(180deg,#ffdf8a,#ff9d2e);
     padding:14px 42px; border-radius:8px;
@@ -74,16 +74,32 @@
   .play-btn:hover { transform:translateY(-2px); box-shadow:0 8px 0 #a85a12, 0 14px 30px rgba(255,120,30,0.5); }
   .play-btn:active { transform:translateY(3px); box-shadow:0 3px 0 #a85a12, 0 6px 14px rgba(255,120,30,0.4); }
 
+  /* ── quick nav ── */
+  .quicknav {
+    position:sticky; top:0; z-index:5; margin-top:34px;
+    display:flex; justify-content:center; gap:2px; flex-wrap:wrap;
+    padding:10px 12px; background:rgba(10,9,18,0.72); backdrop-filter:blur(6px);
+    border-bottom:1px solid rgba(255,179,64,0.18);
+  }
+  .quicknav a {
+    text-decoration:none; font-size:11.5px; letter-spacing:1.8px; text-transform:uppercase;
+    color:rgba(242,237,226,0.65); padding:8px 14px; border-radius:20px; transition:color 0.15s, background 0.15s;
+  }
+  .quicknav a:hover { color:#ffd84d; background:rgba(255,179,64,0.1); }
+
   /* ── sections ── */
-  section { margin-top:46px; }
+  section { margin-top:50px; scroll-margin-top:56px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; margin:0 0 18px; }
+  .sec-num { font-size:12px; letter-spacing:2px; color:rgba(255,179,64,0.5); font-variant-numeric:tabular-nums; }
   h2 {
     font-size:13px; letter-spacing:5px; color:#ffb340; text-transform:uppercase;
-    border-bottom:1px solid rgba(255,179,64,0.25); padding-bottom:9px; margin:0 0 18px;
+    border-bottom:1px solid rgba(255,179,64,0.25); padding-bottom:9px; margin:0; flex:1;
   }
   .card { background:rgba(20,16,28,0.55); border:1px solid rgba(255,255,255,0.06); border-radius:12px; }
+  .lede { font-size:14.5px; line-height:1.6; color:rgba(242,237,226,0.75); margin:0 0 20px; max-width:640px; }
 
   /* controls: compact key/action rows, no wrap-y sentences */
-  .controls { padding:6px 22px; }
+  .controls { padding:4px 22px 6px; }
   .krow {
     display:flex; align-items:center; gap:14px; padding:11px 0;
     border-bottom:1px solid rgba(255,255,255,0.05); font-size:14.5px;
@@ -96,14 +112,54 @@
   }
   .krow span.action { color:rgba(242,237,226,0.8); }
 
-  /* bestiary: compact cards, short lines, fixed rhythm */
-  .bestiary { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
-  .beast { padding:16px 18px; }
-  .beast h3 { margin:0 0 4px; font-size:15.5px; color:#f2ede2; }
-  .beast .tag { display:block; font-size:10.5px; letter-spacing:2px; text-transform:uppercase; color:#ff8b6a; margin-bottom:8px; }
-  .beast.boss { border-color:rgba(255,179,64,0.4); box-shadow:0 0 0 1px rgba(255,179,64,0.15) inset; }
-  .beast.boss .tag { color:#ffe14d; }
-  .beast p { margin:0; font-size:13.5px; line-height:1.5; color:rgba(242,237,226,0.82); font-style:italic; }
+  /* bestiary: avatar + text cards, fixed rhythm */
+  .bestiary { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+  .beast { padding:16px 18px; display:flex; gap:14px; }
+  .beast .portrait {
+    flex:0 0 auto; width:60px; height:60px; border-radius:10px;
+    background:radial-gradient(circle at 50% 40%, rgba(255,255,255,0.05), rgba(0,0,0,0.25));
+    border:1px solid rgba(255,255,255,0.08);
+  }
+  .beast .body { min-width:0; }
+  .beast h3 { margin:0 0 3px; font-size:15px; color:#f2ede2; }
+  .beast .tag { display:block; font-size:10px; letter-spacing:2px; text-transform:uppercase; color:#ff8b6a; margin-bottom:6px; }
+  .beast p { margin:0; font-size:13px; line-height:1.5; color:rgba(242,237,226,0.8); font-style:italic; }
+
+  /* bosses: bigger, badge-ringed cards */
+  .bosses { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
+  .boss-card { padding:20px 20px 18px; text-align:center; position:relative; border-color:rgba(255,255,255,0.09); }
+  .boss-card .portrait {
+    width:84px; height:84px; margin:0 auto 12px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .boss-card h3 { margin:0 0 2px; font-size:17px; color:#f2ede2; letter-spacing:0.5px; }
+  .boss-card .tag { display:block; font-size:10px; letter-spacing:2.5px; text-transform:uppercase; margin-bottom:10px; }
+  .boss-card p { margin:0 0 10px; font-size:13px; line-height:1.55; color:rgba(242,237,226,0.82); font-style:italic; }
+  .boss-card .move {
+    display:inline-block; font-style:normal; font-size:11px; letter-spacing:0.5px; color:rgba(242,237,226,0.65);
+    background:rgba(255,255,255,0.05); border-radius:6px; padding:6px 10px; line-height:1.4;
+  }
+  .boss-card.b-starlight { box-shadow:0 0 0 1px rgba(255,225,77,0.28) inset; }
+  .boss-card.b-starlight .portrait { background:radial-gradient(circle, rgba(255,225,77,0.22), transparent 70%); }
+  .boss-card.b-starlight .tag { color:#ffe14d; }
+  .boss-card.b-atrain { box-shadow:0 0 0 1px rgba(60,150,255,0.28) inset; }
+  .boss-card.b-atrain .portrait { background:radial-gradient(circle, rgba(60,150,255,0.22), transparent 70%); }
+  .boss-card.b-atrain .tag { color:#5fb3ff; }
+  .boss-card.b-maeve { box-shadow:0 0 0 1px rgba(255,40,40,0.28) inset; }
+  .boss-card.b-maeve .portrait { background:radial-gradient(circle, rgba(255,40,40,0.2), transparent 70%); }
+  .boss-card.b-maeve .tag { color:#ff5b52; }
+  .boss-card.b-deep { box-shadow:0 0 0 1px rgba(47,191,154,0.28) inset; }
+  .boss-card.b-deep .portrait { background:radial-gradient(circle, rgba(47,191,154,0.2), transparent 70%); }
+  .boss-card.b-deep .tag { color:#4fd9b4; }
+  .boss-card.b-lamp { box-shadow:0 0 0 1px rgba(255,138,58,0.3) inset; }
+  .boss-card.b-lamp .portrait { background:radial-gradient(circle, rgba(255,138,58,0.24), transparent 70%); }
+  .boss-card.b-lamp .tag { color:#ff8a3a; }
+
+  /* landmark callout */
+  .landmark { padding:20px 22px; display:flex; gap:18px; align-items:center; }
+  .landmark .portrait { flex:0 0 auto; width:70px; height:90px; }
+  .landmark h3 { margin:0 0 6px; font-size:15px; color:#f2ede2; }
+  .landmark p { margin:0; font-size:13.5px; line-height:1.55; color:rgba(242,237,226,0.82); }
 
   footer { margin-top:56px; text-align:center; font-size:12px; letter-spacing:1px; color:rgba(242,237,226,0.4); }
 </style>
@@ -121,84 +177,93 @@
     <h1 class="title">SCORCHED<br/>EARTH</h1>
 
     <p class="voice">
-      "I'm going to take this city apart — block by block, person by person — until there's nothing standing and no one left to scream about it.<br/>
-      Not because I hate you. Because I can, and there's no one left who can stop me.<br/>
-      Enjoy the view. It's the last one you get."
+      "Something a little more... Scorched Earth.<br/>
+      In the end, only one of us left standing..."
     </p>
 
     <a class="play-btn" href="game.html">▶ PLAY</a>
   </div>
 
-  <section>
-    <h2>Controls</h2>
+  <nav class="quicknav">
+    <a href="#controls">Controls</a>
+    <a href="#city">The City</a>
+    <a href="#bosses">The Bosses</a>
+  </nav>
+
+  <section id="controls">
+    <div class="sec-head"><span class="sec-num">01</span><h2>Controls</h2></div>
     <div class="card controls">
-      <div class="krow"><span class="key">WASD / ↑←↓→</span><span class="action">Fly — hold a direction to build up speed</span></div>
+      <div class="krow"><span class="key">WASD / ↑←↓→</span><span class="action">Fly</span></div>
       <div class="krow"><span class="key">Mouse</span><span class="action">Aim</span></div>
-      <div class="krow"><span class="key">Hold Click</span><span class="action">Laser vision — cuts through buildings, enemies, rockets</span></div>
       <div class="krow"><span class="key">Double-tap dir</span><span class="action">Dash-punch (hold a second direction for diagonals)</span></div>
       <div class="krow"><span class="key">Double-tap ↓</span><span class="action">Full ground slam — any altitude, straight down</span></div>
+      <div class="krow"><span class="key">Hold Click</span><span class="action">Laser vision — cuts through buildings and enemies</span></div>
       <div class="krow"><span class="key">Space</span><span class="action">Thunderclap — a shockwave that shoves everything nearby</span></div>
-      <div class="krow"><span class="key">M &nbsp;/&nbsp; P / Esc</span><span class="action">Mute &nbsp;/&nbsp; Pause</span></div>
+      <div class="krow"><span class="key">M</span><span class="action">Mute</span></div>
+      <div class="krow"><span class="key">P / Esc</span><span class="action">Pause</span></div>
     </div>
   </section>
 
-  <section>
-    <h2>What's Down There</h2>
+  <section id="city">
+    <div class="sec-head"><span class="sec-num">02</span><h2>The City</h2></div>
+    <p class="lede">Weakest to strongest. None of it can touch you — it's here to break.</p>
     <div class="bestiary">
-      <div class="card beast">
-        <span class="tag">Fodder</span>
-        <h3>Soldiers &amp; Civilians</h3>
-        <p>You people, with your little guns, thinking that levels anything. It never did. Scream anyway — I've earned it.</p>
+      <div class="card beast"><canvas class="portrait" id="av-civ" width="60" height="60"></canvas>
+        <div class="body"><span class="tag">Fodder</span><h3>Civilians</h3><p>Running doesn't make you a story. It just makes you a moving target, which honestly I prefer.</p></div>
       </div>
-      <div class="card beast">
-        <span class="tag">Traffic</span>
-        <h3>Cars, Taxis &amp; Trucks</h3>
-        <p>More things in my way. I have never once needed to slow down for any of you.</p>
+      <div class="card beast"><canvas class="portrait" id="av-grunt" width="60" height="60"></canvas>
+        <div class="body"><span class="tag">Fodder</span><h3>Soldiers</h3><p>You people, with your little guns, thinking that levels anything. It never did. Scream anyway — I've earned it.</p></div>
       </div>
-      <div class="card beast">
-        <span class="tag">Airspace</span>
-        <h3>Supes &amp; Helicopters</h3>
-        <p>Other "heroes." The government's toy helicopters. Both think they matter here. Neither does.</p>
+      <div class="card beast"><canvas class="portrait" id="av-shark" width="60" height="60"></canvas>
+        <div class="body"><span class="tag">The Bay</span><h3>Sharks</h3><p>Once the blood's in the water, they come on their own. I don't even have to finish the job myself.</p></div>
       </div>
-      <div class="card beast">
-        <span class="tag">Scenery</span>
-        <h3>Commercial Jets</h3>
-        <p>Full of people who think altitude keeps them safe from me. I've let a plane fall before and felt nothing. I won't feel anything now.</p>
+      <div class="card beast"><canvas class="portrait" id="av-supe" width="60" height="60"></canvas>
+        <div class="body"><span class="tag">Airspace</span><h3>Knockoff Supes</h3><p>Other "heroes." Capes, powers, a little fight in them. None of it adds up to anything here.</p></div>
       </div>
-      <div class="card beast boss">
-        <span class="tag">Boss</span>
-        <h3>Starlight</h3>
+    </div>
+
+    <div class="card landmark" style="margin-top:14px;">
+      <canvas class="portrait" id="av-tower" width="70" height="90"></canvas>
+      <div>
+        <h3>Vought Tower</h3>
+        <p>The gold spire at the dead center of the skyline, with a peaked glass roof up top — the tallest thing standing, and where the game opens with you bursting up through it. Hold the laser on the glass long enough and it shatters on its own, no need to bring the whole tower down first. Level the tower itself and the city eventually puts it back up.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="bosses">
+    <div class="sec-head"><span class="sec-num">03</span><h2>The Bosses</h2></div>
+    <p class="lede">Five of them, each on their own independent timer, each with a real gimmick worth learning. They come back a while after you kill them, so there's always another one coming.</p>
+    <div class="bosses">
+      <div class="card boss-card b-starlight">
+        <canvas class="portrait" id="av-starlight" width="84" height="84"></canvas>
+        <span class="tag">Boss</span><h3>Starlight</h3>
         <p>She used to stand next to me and smile for the cameras like she'd earned it. Now she just runs. I like her better this way.</p>
+        <span class="move">Actively jukes out of your laser's path — catch her still or don't bother.</span>
       </div>
-      <div class="card beast boss">
-        <span class="tag">Boss</span>
-        <h3>A-Train</h3>
+      <div class="card boss-card b-atrain">
+        <canvas class="portrait" id="av-atrain" width="84" height="84"></canvas>
+        <span class="tag">Boss</span><h3>A-Train</h3>
         <p>Fast doesn't mean untouchable. It just means I get to enjoy watching him figure that out.</p>
+        <span class="move">Long charging sprints across rooftops and street — telegraphed, but closes distance fast.</span>
       </div>
-      <div class="card beast boss">
-        <span class="tag">Boss</span>
-        <h3>Queen Maeve</h3>
+      <div class="card boss-card b-maeve">
+        <canvas class="portrait" id="av-maeve" width="84" height="84"></canvas>
+        <span class="tag">Boss</span><h3>Queen Maeve</h3>
         <p>She grabbed me once. Thought that made her strong. I let her believe that, for a while.</p>
+        <span class="move">Braces mirror-bright under sustained fire, then lunges in for a grapple.</span>
       </div>
-      <div class="card beast">
-        <span class="tag">Waterfront</span>
-        <h3>The Docks &amp; The Bay</h3>
-        <p>Container stacks, a fat ship full of dockworkers, little boats bobbing around like they're safe out there. The water doesn't hide you from me. Nothing does. And when the blood spreads, the sharks come — I don't even have to finish the job myself.</p>
+      <div class="card boss-card b-deep">
+        <canvas class="portrait" id="av-deep" width="84" height="84"></canvas>
+        <span class="tag">Boss</span><h3>The Deep</h3>
+        <p>He talks to fish. He hides under the waves and thinks that's a kingdom. It's not, but the fish do listen.</p>
+        <span class="move">Rides a dolphin into his leap and charge attacks — shoot the dolphin out from under him.</span>
       </div>
-      <div class="card beast">
-        <span class="tag">Transit</span>
-        <h3>The El Train</h3>
-        <p>Full cars, right on schedule, gliding along above the streets like the altitude means something. I've always liked trains. They can't swerve.</p>
-      </div>
-      <div class="card beast">
-        <span class="tag">Escalation</span>
-        <h3>Tanks &amp; the Coast Guard</h3>
-        <p>Eventually they send armor, and little white helicopters to fish the survivors out of the bay. Sweet, honestly. The cable only takes one look to cut.</p>
-      </div>
-      <div class="card beast boss">
-        <span class="tag">Boss</span>
-        <h3>The Deep</h3>
-        <p>He talks to fish. He hides under the waves and thinks that's a kingdom. Stay under too long and he'll drag you out himself — it's the bravest thing he'll ever do, and it won't matter.</p>
+      <div class="card boss-card b-lamp">
+        <canvas class="portrait" id="av-lamp" width="84" height="84"></canvas>
+        <span class="tag">Boss</span><h3>Lamplighter</h3>
+        <p>He set people on fire for a paycheck and called it clean-up. I don't need a paycheck, and I'm not going to call it anything.</p>
+        <span class="move">Close-range dragon-breath cone, ranged fireballs immune to your laser, and dodges almost as well as Starlight.</span>
       </div>
     </div>
   </section>
@@ -220,6 +285,159 @@
     e.style.animationDelay = (Math.random()*10)+'s';
     document.body.appendChild(e);
   }
+</script>
+
+<script>
+  // ── avatar portraits — small standalone renders matching the in-game palette/silhouette for
+  // each entity, so what you see here is what you'll actually meet in the city. not the real
+  // game draw code (that needs live game state to run) — coordinates hand-matched from it instead.
+  function simpleCtx(id) {
+    const c = document.getElementById(id);
+    if (!c) return null;
+    const cx = c.getContext('2d');
+    cx.translate(c.width/2, c.height/2 + c.height*0.28);
+    return cx;
+  }
+  function rawCtx(id) {
+    const c = document.getElementById(id);
+    return c ? c.getContext('2d') : null;
+  }
+
+  function drawGruntAvatar(cx) {
+    cx.strokeStyle = '#23282e'; cx.lineWidth = 4;
+    cx.beginPath(); cx.moveTo(0,-12); cx.lineTo(-4,0); cx.moveTo(0,-12); cx.lineTo(4,0); cx.stroke();
+    cx.fillStyle = '#2e353d'; cx.fillRect(-5,-25,10,14);
+    cx.fillStyle = '#3a424b'; cx.fillRect(-5,-25,10,5);
+    cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-29,4.6,0,7); cx.fill();
+    cx.fillStyle = '#252b31'; cx.beginPath(); cx.arc(0,-31,5,Math.PI,0); cx.fill();
+    cx.fillStyle = '#15181c'; cx.fillRect(4,-20,14,3);
+  }
+  function drawCivAvatar(cx) {
+    cx.strokeStyle = '#39506a'; cx.lineWidth = 3.4;
+    cx.beginPath(); cx.moveTo(0,-10); cx.lineTo(-3,0); cx.moveTo(0,-10); cx.lineTo(3,0); cx.stroke();
+    cx.fillStyle = '#2f6f6a'; cx.fillRect(-4,-22,8,13);
+    cx.strokeStyle = '#2f6f6a'; cx.lineWidth = 2.8;
+    cx.beginPath(); cx.moveTo(3,-20); cx.lineTo(4,-11); cx.moveTo(-3,-20); cx.lineTo(-4,-11); cx.stroke();
+    cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-26,4.2,0,7); cx.fill();
+    cx.fillStyle = '#2a2430'; cx.beginPath(); cx.arc(0,-28,4.2,Math.PI,0); cx.fill();
+  }
+  function drawSupeAvatar(cx) {
+    cx.fillStyle = '#c0322e';
+    cx.beginPath(); cx.moveTo(-3,-11); cx.quadraticCurveTo(-14,0,-11,15); cx.lineTo(-3,8); cx.closePath(); cx.fill();
+    cx.fillStyle = '#1a1a1f'; cx.fillRect(-5,-13,10,17);
+    cx.strokeStyle = '#1a1a1f'; cx.lineWidth = 4;
+    cx.beginPath(); cx.moveTo(4,-9); cx.lineTo(7,1); cx.moveTo(-4,-9); cx.lineTo(-6,-1); cx.stroke();
+    cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-18,4.4,0,7); cx.fill();
+    cx.fillStyle = '#1a1a1f'; cx.beginPath(); cx.arc(0,-19.5,4.6,Math.PI*1.1,Math.PI*1.9); cx.fill();
+  }
+  function drawSharkAvatar(cx) {
+    cx.fillStyle = 'rgba(120,140,152,0.9)';
+    cx.beginPath(); cx.ellipse(0,3,26,9,0,0,7); cx.fill();
+    cx.fillStyle = 'rgba(210,222,228,0.6)'; cx.beginPath(); cx.ellipse(0,7,18,4,0,0,7); cx.fill();
+    cx.beginPath(); cx.moveTo(20,3); cx.lineTo(32,-2); cx.lineTo(29,6); cx.closePath(); cx.fill();
+    cx.fillStyle = '#6a7d89';
+    cx.beginPath(); cx.moveTo(-4,-6); cx.quadraticCurveTo(2,-20,8,-6); cx.closePath(); cx.fill();
+  }
+  function drawTowerAvatar(cx) {
+    // matches the in-game peaked glass roof: a single gold chevron sitting on the roofline,
+    // sloping down to the eaves either side, glass panel filling the triangle beneath it
+    cx.fillStyle = '#8a6a28'; cx.fillRect(-18,-8,36,42);
+    cx.fillStyle = '#e8c04a'; cx.fillRect(-18,-8,36,9);
+    cx.fillStyle = 'rgba(255,240,200,0.5)';
+    for (let ty=1;ty<34;ty+=9) cx.fillRect(-13,1+ty,26,4);
+    const apexX=0, apexY=-38, baseLX=-19, baseRX=19, baseY=-8;
+    cx.fillStyle = 'rgba(180,225,240,0.45)';
+    cx.beginPath(); cx.moveTo(apexX,apexY); cx.lineTo(baseLX,baseY); cx.lineTo(baseRX,baseY); cx.closePath(); cx.fill();
+    cx.strokeStyle = '#e8c04a'; cx.lineWidth = 3.4; cx.lineJoin = 'round';
+    cx.beginPath(); cx.moveTo(baseLX,baseY); cx.lineTo(apexX,apexY); cx.lineTo(baseRX,baseY); cx.stroke();
+  }
+
+  // ── bosses — real coordinates from each character's actual draw function, just re-centered
+  // and scaled for a small portrait, so the proportions read correctly instead of guessed ──
+  function drawStarlightAvatar(cx) {
+    cx.save(); cx.translate(42,48); cx.scale(1.08,1.08);
+    cx.fillStyle = 'rgba(255,225,77,0.4)'; cx.beginPath(); cx.arc(0,-6,32,0,7); cx.fill();
+    cx.fillStyle = '#ffe14d';
+    cx.beginPath(); cx.moveTo(-4,-16); cx.quadraticCurveTo(-22,0,-16,22); cx.lineTo(-4,12); cx.closePath(); cx.fill();
+    cx.fillStyle = '#f2eddc'; cx.fillRect(-7,-18,14,26);
+    cx.strokeStyle = '#f2eddc'; cx.lineWidth = 6;
+    cx.beginPath(); cx.moveTo(-3,8); cx.lineTo(-5,24); cx.moveTo(3,8); cx.lineTo(6,22); cx.stroke();
+    cx.beginPath(); cx.moveTo(5,-14); cx.lineTo(10,0); cx.moveTo(-5,-14); cx.lineTo(-9,-2); cx.stroke();
+    cx.fillStyle = '#d4a888'; cx.beginPath(); cx.arc(0,-24,6.5,0,7); cx.fill();
+    cx.fillStyle = '#e8c468';
+    cx.beginPath(); cx.moveTo(-5.5,-29); cx.quadraticCurveTo(-15,-13,-11,13); cx.quadraticCurveTo(-9,-8,-6,-22); cx.closePath(); cx.fill();
+    cx.beginPath(); cx.moveTo(5.5,-29); cx.quadraticCurveTo(12,-11,8,11); cx.quadraticCurveTo(7,-9,5.5,-22); cx.closePath(); cx.fill();
+    cx.beginPath(); cx.arc(0,-28,6.6,Math.PI*1.05,Math.PI*1.95); cx.fill();
+    cx.fillStyle = '#2a4a8a'; cx.fillRect(-3.4,-25,1.5,1.7); cx.fillRect(1.1,-25,1.5,1.7);
+    cx.fillStyle = '#ffe14d';
+    cx.beginPath();
+    for (let i=0;i<5;i++) { const a=-Math.PI/2+i*Math.PI*0.8; cx.lineTo(Math.cos(a)*4.2, -10+Math.sin(a)*4.2); const a2=a+Math.PI*0.4; cx.lineTo(Math.cos(a2)*1.8, -10+Math.sin(a2)*1.8); }
+    cx.closePath(); cx.fill();
+    cx.restore();
+  }
+  function drawATrainAvatar(cx) {
+    cx.save(); cx.translate(42,68); cx.scale(1.45,1.45);
+    cx.fillStyle = 'rgba(60,150,255,0.4)'; cx.beginPath(); cx.arc(0,-18,34,0,7); cx.fill();
+    cx.strokeStyle = 'rgba(120,210,255,0.7)'; cx.lineWidth = 2; cx.lineCap = 'round';
+    cx.beginPath(); cx.moveTo(-8,-20); cx.lineTo(-16,-24); cx.lineTo(-22,-18); cx.lineTo(-30,-22); cx.stroke();
+    cx.strokeStyle = '#15181c'; cx.lineWidth = 5;
+    cx.beginPath(); cx.moveTo(0,-14); cx.lineTo(-5,0); cx.moveTo(0,-14); cx.lineTo(6,0); cx.stroke();
+    cx.fillStyle = '#1a3a8a'; cx.fillRect(-6,-30,12,17);
+    cx.fillStyle = '#2f8fff'; cx.fillRect(-6,-30,12,6);
+    cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
+    cx.restore();
+  }
+  function drawMaeveAvatar(cx) {
+    cx.save(); cx.translate(42,68); cx.scale(1.45,1.45);
+    cx.fillStyle = 'rgba(255,40,40,0.35)'; cx.beginPath(); cx.arc(0,-18,34,0,7); cx.fill();
+    cx.strokeStyle = '#15181c'; cx.lineWidth = 5;
+    cx.beginPath(); cx.moveTo(0,-14); cx.lineTo(-5,0); cx.moveTo(0,-14); cx.lineTo(6,0); cx.stroke();
+    cx.fillStyle = '#c9ccd6'; cx.fillRect(-7,-9,4,3); cx.fillRect(3,-9,4,3);
+    cx.fillStyle = '#7a0e12'; cx.fillRect(-6,-30,12,17);
+    cx.fillStyle = '#e0231f'; cx.fillRect(-6,-30,12,6);
+    cx.fillStyle = '#c9ccd6'; cx.fillRect(-6,-15,12,2);
+    cx.fillStyle = '#c8a080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
+    cx.fillStyle = '#2a1a14'; cx.beginPath(); cx.arc(0,-38,6,Math.PI,0); cx.fill();
+    cx.fillStyle = '#e8c23a'; cx.fillRect(-5.5,-40,11,1.6);
+    cx.restore();
+  }
+  function drawDeepAvatar(cx) {
+    cx.save(); cx.translate(42,53); cx.scale(1.07,1.07);
+    cx.fillStyle = 'rgba(47,191,154,0.35)'; cx.beginPath(); cx.arc(0,-18,34,0,7); cx.fill();
+    cx.fillStyle = '#7d8a94';
+    cx.beginPath(); cx.ellipse(2,8,30,9,0,0,7); cx.fill();
+    cx.beginPath(); cx.moveTo(30,8); cx.lineTo(44,4); cx.lineTo(40,11); cx.closePath(); cx.fill();
+    cx.beginPath(); cx.moveTo(-26,6); cx.lineTo(-36,-2); cx.lineTo(-30,10); cx.closePath(); cx.fill();
+    cx.strokeStyle = '#15181c'; cx.lineWidth = 5;
+    cx.beginPath(); cx.moveTo(0,-14); cx.lineTo(-5,0); cx.moveTo(0,-14); cx.lineTo(6,0); cx.stroke();
+    cx.fillStyle = '#114b40'; cx.fillRect(-6,-30,12,17);
+    cx.fillStyle = '#2fbf9a'; cx.fillRect(-6,-30,12,5);
+    cx.fillStyle = '#c9a227'; cx.fillRect(-6,-16,12,2);
+    cx.fillStyle = '#0d3a34';
+    cx.beginPath(); cx.moveTo(-6,-28); cx.lineTo(-14,-22); cx.lineTo(-6,-18); cx.closePath(); cx.fill();
+    cx.fillStyle = '#cfa080'; cx.beginPath(); cx.arc(0,-35,5.5,0,7); cx.fill();
+    cx.fillStyle = '#5d4126'; cx.beginPath(); cx.arc(0,-37.5,5.8,Math.PI,0); cx.fill();
+    cx.restore();
+  }
+  function drawLampAvatar(cx) {
+    cx.save(); cx.translate(42,48); cx.scale(1.08,1.08);
+    cx.fillStyle = 'rgba(255,120,40,0.4)'; cx.beginPath(); cx.arc(0,-6,32,0,7); cx.fill();
+    cx.fillStyle = '#ff6a1a';
+    cx.beginPath(); cx.moveTo(-4,-16); cx.quadraticCurveTo(-22,0,-16,22); cx.lineTo(-4,12); cx.closePath(); cx.fill();
+    cx.fillStyle = '#2a1610'; cx.fillRect(-7,-18,14,26);
+    cx.strokeStyle = '#2a1610'; cx.lineWidth = 6;
+    cx.beginPath(); cx.moveTo(-3,8); cx.lineTo(-5,24); cx.moveTo(3,8); cx.lineTo(6,22); cx.stroke();
+    cx.beginPath(); cx.moveTo(5,-14); cx.lineTo(10,0); cx.moveTo(-5,-14); cx.lineTo(-9,-2); cx.stroke();
+    cx.fillStyle = '#d4a888'; cx.beginPath(); cx.arc(0,-24,6.5,0,7); cx.fill();
+    cx.fillStyle = '#1c0e08'; cx.beginPath(); cx.arc(0,-26,6.6,Math.PI*1.05,Math.PI*1.95); cx.fill();
+    cx.fillStyle = 'rgba(255,150,50,0.9)'; cx.beginPath(); cx.arc(0,-10,4,0,7); cx.fill();
+    cx.restore();
+  }
+
+  const simpleAvatars = { 'av-grunt': drawGruntAvatar, 'av-civ': drawCivAvatar, 'av-supe': drawSupeAvatar, 'av-shark': drawSharkAvatar, 'av-tower': drawTowerAvatar };
+  const bossAvatars = { 'av-starlight': drawStarlightAvatar, 'av-atrain': drawATrainAvatar, 'av-maeve': drawMaeveAvatar, 'av-deep': drawDeepAvatar, 'av-lamp': drawLampAvatar };
+  for (const id in simpleAvatars) { const cx = simpleCtx(id); if (cx) simpleAvatars[id](cx); }
+  for (const id in bossAvatars) { const cx = rawCtx(id); if (cx) bossAvatars[id](cx); }
 </script>
 
 </body>
