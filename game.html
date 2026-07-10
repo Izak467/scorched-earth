@@ -2061,10 +2061,10 @@ function update(dt) {
         const nux = bux/blen, nuy = buy/blen;
         const toSx = s.x-bex, toSy = s.y-bey;
         const proj = toSx*nux + toSy*nuy;
-        if (proj > 0 && proj < blen+50) {
+        if (proj > 0 && proj < blen+90) {
           const perpX = toSx - nux*proj, perpY = toSy - nuy*proj;
           const perpDist = Math.hypot(perpX,perpY) || 1;
-          if (perpDist < 100) { s.vx += (perpX/perpDist)*900*dt; s.vy += (perpY/perpDist)*900*dt; }
+          if (perpDist < 150) { s.vx += (perpX/perpDist)*1250*dt; s.vy += (perpY/perpDist)*1250*dt; }
         }
       }
       s.x = clamp(s.x + s.vx*dt, 60, WORLD_W-60);
@@ -2892,10 +2892,10 @@ function update(dt) {
       const nux = bux/blen, nuy = buy/blen;
       const toLx = l.x-bex, toLy = l.y-bey;
       const proj = toLx*nux + toLy*nuy;
-      if (proj > 0 && proj < blen+50) {
+      if (proj > 0 && proj < blen+90) {
         const perpX = toLx - nux*proj, perpY = toLy - nuy*proj;
         const perpDist = Math.hypot(perpX,perpY) || 1;
-        if (perpDist < 130) { l.vx += (perpX/perpDist)*1100*dt; l.vy += (perpY/perpDist)*1100*dt; }
+        if (perpDist < 170) { l.vx += (perpX/perpDist)*1450*dt; l.vy += (perpY/perpDist)*1450*dt; }
       }
     }
     l.x = clamp(l.x + l.vx*dt, 60, WORLD_W-60);
