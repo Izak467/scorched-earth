@@ -909,7 +909,8 @@ function spawnDeep() {
   deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
     hp: 1200, maxHp: 1200, state: 'lurk', stateT: rand(1,2), facing: -1, dead: false,
     atkCd: rand(1.6,2.6), jumpVx: 0, jumpVy: 0, chargeDir: 1, fleeing: false, fleeT: 0,
-    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.6,2.8), weaveOffset: 0 });
+    weavePhase: rand(0, Math.PI*2), weaveCd: rand(1.6,2.8), weaveOffset: 0,
+    dolphinHp: 0, airFishCd: 0 });
 }
 function deepDeath(dp) {
   if (dp.dead) return;
@@ -1830,10 +1831,26 @@ function update(dt) {
       }
     } else if (hitDeep) {
       const dp = hitDeep;
-      dp.hp -= 380*dt*LASER_DMG_MULT*deepDamageMult(dp);
-      if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
-      else if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
-      if (dp.hp <= 0) deepDeath(dp);
+      if (dp.dolphinHp > 0) {
+        // he's mounted (leaping breach or the dolphin-charge) — the dolphin is riding point-blank
+        // in front of him, so it eats the beam instead of him until it's shot out from under him
+        dp.dolphinHp -= 450*dt*LASER_DMG_MULT;
+        if (Math.random()<0.6) bubbleAt(dp.x+rand(-10,10), dp.y+rand(0,10));
+        if (dp.dolphinHp <= 0) {
+          dp.dolphinHp = 0;
+          splash(dp.x, 500); shake(10); sfxCrack();
+          for (let i=0;i<7;i++) debris.push({ x: dp.x+rand(-14,14), y: dp.y+rand(-6,10), vx: rand(-140,140), vy: rand(-180,-20), rot: rand(0,7), vr: rand(-8,8), r: rand(2,5), c: '#7d8a94', life: rand(0.5,1) });
+          dp.hp -= 80;   // dumped hard when it goes out from under him
+          if (dp.state === 'jump') dp.state = 'fall';
+          else if (dp.state === 'dolphin') dp.state = 'lurk';
+          if (dp.hp <= 0) deepDeath(dp);
+        }
+      } else {
+        dp.hp -= 380*dt*LASER_DMG_MULT*deepDamageMult(dp);
+        if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
+        else if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
+        if (dp.hp <= 0) deepDeath(dp);
+      }
     } else if (hitLamp) {
       const l = hitLamp;
       l.hp -= 380*dt*LASER_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1); l.smokeT = 0.1; l.flash = 0.1;
@@ -2710,7 +2727,7 @@ function update(dt) {
         const r = Math.random();
         if (r < 0.45) { dp.state = 'crouch'; dp.stateT = 0.35; }
         else if (r < 0.72) { dp.state = 'volley'; dp.stateT = 0.3; }
-        else { dp.state = 'dolphin'; dp.stateT = 0.35; dp.chargeDir = P.x >= dp.x ? 1 : -1; }
+        else { dp.state = 'dolphin'; dp.stateT = 0.35; dp.chargeDir = P.x >= dp.x ? 1 : -1; dp.dolphinHp = 220; }
         dp.atkCd = rand(1.7, 2.6);
       }
     } else if (dp.state === 'crouch') {
@@ -2723,6 +2740,7 @@ function update(dt) {
         const dx = tx-dp.x, dy = ty-dp.y, dd = Math.hypot(dx,dy) || 1;
         dp.jumpVx = (dx/dd)*1400; dp.jumpVy = (dy/dd)*1400 - 220;
         dp.state = 'jump'; dp.stateT = 0.7;
+        dp.dolphinHp = 220; dp.airFishCd = 0.2;   // riding the dolphin for the leap — shoot it out from under him
         splash(dp.x, 800);
       }
     } else if (dp.state === 'jump') {
@@ -2732,14 +2750,21 @@ function update(dt) {
       dp.jumpVx += ((tdx/tdd)*1400 - dp.jumpVx)*turn; dp.jumpVy += ((tdy/tdd)*1400 - dp.jumpVy)*turn;
       dp.x += dp.jumpVx*dt; dp.y += dp.jumpVy*dt;
       dp.facing = dp.jumpVx >= 0 ? 1 : -1;
+      // he can fling fish at you mid-leap too, not just from the water
+      dp.airFishCd -= dt;
+      if (dp.airFishCd <= 0) {
+        dp.airFishCd = rand(0.3, 0.45);
+        const a = Math.atan2(P.y-dp.y, P.x-dp.x);
+        fishes.push({ x: dp.x, y: dp.y, vx: Math.cos(a)*760, vy: Math.sin(a)*760, life: 2, t: rand(0,9) });
+      }
       if (dist2(dp.x,dp.y,P.x,P.y) < 75*75) {
         // connects — slightly less force than Maeve's hit, no stun. floored, not just zero-guarded
         const kd = Math.max(Math.hypot(P.x-dp.x, P.y-dp.y), 20);
         P.grounded = false; P.hopping = false; P.knockT = 0.5;
         P.vx += (P.x-dp.x)/kd * 3200; P.vy += (P.y-dp.y)/kd * 3200;
         P.hurtFlash = 1; shake(18); sfxHit(); thump(65,0.3,0.3);
-        dp.state = 'fall';
-      } else if (dp.stateT <= 0) dp.state = 'fall';
+        dp.state = 'fall'; dp.dolphinHp = 0;
+      } else if (dp.stateT <= 0) { dp.state = 'fall'; dp.dolphinHp = 0; }
     } else if (dp.state === 'fall') {
       dp.jumpVy += 1500*dt;
       dp.x += dp.jumpVx*0.4*dt; dp.y += dp.jumpVy*dt;
@@ -2774,7 +2799,7 @@ function update(dt) {
       dp.stateT -= dt;
       if (dp.stateT <= 0) {
         // a school of fish leaps out of the water in an arcing spread at you
-        for (let k=0;k<5;k++) {
+        for (let k=0;k<8;k++) {
           const fx = clamp(dp.x + rand(-90,90), WATER_X+40, WORLD_W-40);
           const a = Math.atan2(P.y - GROUND_Y, P.x - fx);
           const sp = rand(680, 900);
@@ -2797,9 +2822,9 @@ function update(dt) {
           P.grounded = false; P.knockT = 0.45;
           P.vx += dp.chargeDir*2400; P.vy -= 350;
           P.hurtFlash = 1; shake(16); sfxHit(); thump(70,0.25,0.3);
-          dp.state = 'lurk';
+          dp.state = 'lurk'; dp.dolphinHp = 0;
         } else if (dp.x < CITY_W || dp.x > WORLD_W - 90 || Math.abs(dp.x - P.x) > 1400) {
-          dp.state = 'lurk';
+          dp.state = 'lurk'; dp.dolphinHp = 0;
         }
       }
     }
@@ -3801,8 +3826,10 @@ function drawDeep(dp) {
     // shape that needed its own readability bump; stacking both here made him visibly larger
     // than every other boss instead of matching them
     cx.save(); cx.translate(x, y); cx.scale(dp.facing*BOSS_SCALE, BOSS_SCALE);
-    if (dp.state === 'dolphin' && dp.stateT <= 0) {
-      // the dolphin he's riding
+    if (dp.dolphinHp > 0) {
+      // the dolphin he's riding — mounted for both the leaping breach and the charge attack,
+      // and it's a real target: it's soaking the beam in his place (see hitDeep) until it's shot
+      // out from under him
       cx.fillStyle = '#7d8a94';
       cx.beginPath(); cx.ellipse(2, 8, 30, 9, 0, 0, 7); cx.fill();
       cx.beginPath(); cx.moveTo(30, 8); cx.lineTo(44, 4); cx.lineTo(40, 11); cx.closePath(); cx.fill();
