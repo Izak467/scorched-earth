@@ -522,8 +522,10 @@ function thump(freq, dur, vol) {
   o.connect(g); g.connect(master); o.start(); o.stop(AC.currentTime+dur);
 }
 const sfxSplat = () => { noiseBurst(0.14, 420, 0.16); thump(110, 0.12, 0.12); };
-const sfxDash  = () => noiseBurst(0.25, 1200, 0.14, 'bandpass');
-const sfxHit   = () => noiseBurst(0.04, 2200, 0.05, 'highpass');
+// both of these fire constantly in combat (every dash, every single hit connecting) — high-frequency
+// bandpass/highpass noise reads as a sibilant hiss, and at the old freq/volume that adds up fast
+const sfxDash  = () => noiseBurst(0.25, 950, 0.1, 'bandpass');
+const sfxHit   = () => noiseBurst(0.04, 1700, 0.035, 'highpass');
 const sfxBoom  = () => { noiseBurst(0.5, 240, 0.35); thump(52, 0.45, 0.3); };
 const sfxCrack = () => noiseBurst(0.08, 900, 0.07);
 
@@ -699,7 +701,11 @@ let shipRespawnT = 0, sailShip = null;   // the docked-ship respawn cycle: sink 
 // window where it's fully lasable but doesn't physically shove/trap the player at all.
 let shipGraceT = 0;
 
-function shake(m) { shakeMag = Math.min(24, shakeMag + m); }
+// diminishing returns as shakeMag approaches the cap — a single big hit from a calm baseline still
+// lands close to full effect, but a flurry of small overlapping triggers (dock fights especially)
+// tapers off instead of just pinning at max and staying there, which read as constant disorienting
+// jitter rather than distinct hits
+function shake(m) { shakeMag = Math.min(24, shakeMag + m * (1 - shakeMag/24)); }
 // boss kills are easy to lose in the chaos of a normal fight — make them unmistakable with a
 // banner, a hard flash/shake, and a much bigger sound than a regular kill
 let bossBanner = null;
@@ -1029,6 +1035,7 @@ const JET_SCALE = 2.3;
 const SHARK_SCALE = 1.3;   // a bit bigger — easier to actually make out against the dark water
 const TANK_SCALE = 1.7;    // was barely readable next to everything else at street scale
 const DEEP_SCALE = 1.45;   // his submerged fin-and-shadow silhouette (his most common state) read too small
+const NPC_SCALE = 1.18;    // regular grunts/civs were drawn at literally the player's own unit scale but read smaller next to him
 function destroyCell(b, i, wx, wy, quiet) {
   if (b.cells[i] >= 1) return;
   b.cells[i] = 1; b.destroyed++; b.dirty = true; b.supActive = true;
@@ -1533,7 +1540,7 @@ function update(dt) {
   camX += (clamp(P.x + P.vx*0.22 - VW/2, 0, WORLD_W - VW) - camX) * Math.min(1, dt*5);
   const camBot = Math.max(-100, (P.x > WATER_X - 300 ? WATER_FLOOR + 140 : GROUND_Y + 120) - VH);
   camY += (clamp(P.y + P.vy*0.15 - VH/2, -100, camBot) - camY) * Math.min(1, dt*5);
-  shakeMag = Math.max(0, shakeMag - dt*30);
+  shakeMag = Math.max(0, shakeMag - dt*44);
 
   // ── structural checks / collapse animation ──
   for (const b of fgBuildings) {
@@ -2072,7 +2079,7 @@ function update(dt) {
       if (s.atkCd <= 0 && boltLockout <= 0) {
         const a = Math.atan2(P.y-s.y, P.x-s.x);
         electroBolts.push({ x: s.x, y: s.y, vx: Math.cos(a)*1088, vy: Math.sin(a)*1088, life: 2.2 });
-        noiseBurst(0.15, 1400, 0.12, 'highpass');
+        noiseBurst(0.15, 1100, 0.08, 'highpass');
         s.atkCd = rand(1.3, 1.9);   // a touch slower than before
       }
       continue;
@@ -3989,7 +3996,7 @@ function drawGrunt(g) {
   const x = g.x - camX, y = g.y - camY;
   if (x < -60 || x > VW+60) return;
   const walk = g.air ? 0 : Math.sin(g.stepT*9) * (Math.abs(g.vx)>5 ? 4 : 0);
-  cx.save(); cx.translate(x, y);
+  cx.save(); cx.translate(x, y); cx.scale(NPC_SCALE, NPC_SCALE);
   if (g.boatG) {
     // grey patrol boat under the gunner
     cx.fillStyle = '#3a4046';
@@ -4025,7 +4032,7 @@ function drawCiv(c) {
   if (x < -40 || x > VW+40) return;
   if (c.swim) {
     // just a bobbing head and a paddling arm above the swell
-    cx.save(); cx.translate(x, y);
+    cx.save(); cx.translate(x, y); cx.scale(NPC_SCALE, NPC_SCALE);
     cx.strokeStyle = 'rgba(200,235,250,0.5)'; cx.lineWidth = 1.5;
     cx.beginPath(); cx.ellipse(0, -2, 12, 3, 0, 0, 7); cx.stroke();
     cx.fillStyle = c.skin; cx.beginPath(); cx.arc(0, -8, 5, 0, 7); cx.fill();
@@ -4038,7 +4045,7 @@ function drawCiv(c) {
   }
   const run = c.panic > 0;
   const walk = Math.sin(c.stepT*(run?16:7)) * (run?5:3);
-  cx.save(); cx.translate(x, y); cx.scale(c.dir, 1);
+  cx.save(); cx.translate(x, y); cx.scale(c.dir*NPC_SCALE, NPC_SCALE);
   cx.strokeStyle = c.pant; cx.lineWidth = 4;
   cx.beginPath(); cx.moveTo(0,-12); cx.lineTo(-3+walk, 0); cx.moveTo(0,-12); cx.lineTo(3-walk, 0); cx.stroke();
   cx.fillStyle = c.top; cx.fillRect(-5, -26, 10, 15);
@@ -4138,7 +4145,7 @@ function drawSupe(s) {
   const x = s.x - camX, y = s.y - camY;
   if (x < -110 || x > VW+110) return;
   const f = (P.x >= s.x) ? 1 : -1;
-  const sc = s.boss ? BOSS_SCALE : 1;
+  const sc = s.boss ? BOSS_SCALE : NPC_SCALE;   // regular supes read smaller than the player at 1x — bump to match
   cx.save(); cx.translate(x, y);
   if (isJuggled(s)) cx.rotate(gameT*11);   // visibly tumbling from a launch, not just floating
   cx.scale(f*sc, sc);
@@ -4702,7 +4709,7 @@ function updateIntro(dt) {
     const title = document.getElementById('title'); if (title) title.style.opacity = '1';
     const hint = document.getElementById('hint'); if (hint) hint.style.opacity = '1';
   }
-  shakeMag = Math.max(0, shakeMag - dt*30);
+  shakeMag = Math.max(0, shakeMag - dt*44);
   // shatter shards/sparks still need to fall and fade even though the real update() isn't running
   for (const d of debris) { d.vy += 1400*dt; d.x += d.vx*dt; d.y += d.vy*dt; d.rot += d.vr*dt; d.life -= dt; }
   for (const s of sparks) { s.vy += 800*dt; s.x += s.vx*dt; s.y += s.vy*dt; s.life -= dt; }
