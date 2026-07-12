@@ -31,9 +31,27 @@
     transition:opacity 1.5s; white-space:nowrap;
     opacity:0;   /* hidden during the intro, faded in at handoff same as #hud/#title */
   }
+  #mobileBlock {
+    display:none; position:fixed; inset:0; z-index:50; overflow:hidden;
+    background:linear-gradient(180deg,#141433 0%,#3d2450 40%,#a8433a 72%,#e8843c 100%);
+    color:#f2ede2; font-family:Georgia,'Times New Roman',serif;
+    flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:40px 26px;
+  }
+  #mobileBlock .glyph { font-size:40px; margin-bottom:12px; }
+  #mobileBlock .brand {
+    font-weight:900; letter-spacing:4px; font-size:clamp(22px,7vw,32px); line-height:1.1; margin-bottom:16px;
+    background:linear-gradient(180deg,#fff6d6 0%,#ffd84d 18%,#ff9d2e 40%,#ff5a1f 62%,#e0311a 82%,#7a160f 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  #mobileBlock p { max-width:360px; font-size:15px; line-height:1.6; color:rgba(242,237,226,.9); margin:0; }
 </style>
 </head>
 <body>
+<div id="mobileBlock">
+  <div class="glyph">🖥️</div>
+  <div class="brand">SCORCHED EARTH</div>
+  <p>This one needs a keyboard and a mouse — flying, aiming, and lasering a whole city doesn't work on a touchscreen.<br/><br/>Open this link on a computer instead.</p>
+</div>
 <div id="title">SCORCHED EARTH</div>
 <div id="hud"><div id="kills">0 KILLS</div><div id="dmg">$0 DAMAGE</div><div id="streak"></div></div>
 <div id="hint">WASD/ARROWS fly (speed builds) · MOUSE aim · HOLD CLICK laser · DOUBLE-TAP dir DASH (hold a 2nd dir = diagonal) · dash DOWN into street = SLAM · SPACE thunderclap · M mute · P pause</div>
@@ -43,6 +61,14 @@
 // ═══════════════════ SCORCHED EARTH v3 ═══════════════════
 // Granular destructible city with structural collapse, traffic,
 // jetpack troopers, hostile rockets, physical thunderclap.
+
+// keyboard + mouse only, no touch controls — rather than let a phone visitor sit on a dead,
+// unplayable canvas, point them at a computer instead and never boot the game loop at all
+const isMobile = matchMedia('(pointer: coarse)').matches;
+if (isMobile) {
+  document.getElementById('mobileBlock').style.display = 'flex';
+  document.getElementById('cv').style.display = 'none';
+}
 
 const cv = document.getElementById('cv');
 const cx = cv.getContext('2d');
@@ -4769,7 +4795,7 @@ for (let i=0;i<5;i++) spawnGrunt(true);
 for (let i=0;i<60;i++) spawnCiv();
 for (let i=0;i<18;i++) spawnCar();
 setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 16000);
-requestAnimationFrame(frame);
+if (!isMobile) requestAnimationFrame(frame);
 </script>
 </body>
 </html>
