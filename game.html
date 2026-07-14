@@ -1445,7 +1445,11 @@ function update(dt) {
         shake(16); freezeT = Math.max(freezeT, 0.08); sfxBoom();
         rings.push({x:s.x,y:s.y,r:16,life:0.5,w:7});
       } else {
-        s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
+        // full knockback on the hit that actually launches them (that's the haymaker); once
+        // they're already airborne, follow-up hits stay light so they don't get scattered out of
+        // combo range — otherwise every extension would also be shoving them further away
+        const kb = isJuggled(s) ? 120 : 400;
+        s.vx += P.dashDir.x*kb; s.vy += P.dashDir.y*kb;
         // an upward-angled punch launches into a fresh juggle window; any other angle into an
         // already-juggled target extends it instead of dropping it — that's the real combo lever,
         // not needing more directions to hit from
@@ -1455,7 +1459,7 @@ function update(dt) {
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     }
-    for (const h of helis) if (!h.dead && dist2(P.x,P.y,h.x,h.y) < 105*105) heliDeath(h);
+    for (const h of helis) if (!h.dead && dist2(P.x,P.y,h.x,h.y) < (84*HELI_SCALE)*(84*HELI_SCALE)) heliDeath(h);
     // a dash lasts several frames — without a once-per-swing guard, a boss that isn't shoved clear
     // of the hit radius immediately could take this flat damage 3-5x off a single punch instead of once
     for (const a of atrains) if (!a.dead && !P.dashHitSet.has(a) && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
@@ -1498,7 +1502,10 @@ function update(dt) {
         shake(16); freezeT = Math.max(freezeT, 0.08); sfxBoom();
         rings.push({x:l.x,y:l.y,r:16,life:0.5,w:7});
       } else {
-        l.vx += P.dashDir.x*400; l.vy += P.dashDir.y*400;
+        // see the matching comment on Starlight above — light knockback on juggle extensions so
+        // repeat hits don't scatter the combo out of reach
+        const kb = isJuggled(l) ? 120 : 400;
+        l.vx += P.dashDir.x*kb; l.vy += P.dashDir.y*kb;
         if (P.dashDir.y < -0.3) l.launchedT = 0.9;
         else if (isJuggled(l)) l.launchedT = Math.min(l.launchedT + 0.5, 1.4);
       }
@@ -1738,7 +1745,7 @@ function update(dt) {
     for (const h of helis) {
       if (h.dead) continue;
       const t = clamp((h.x-ex)*ux + (h.y-ey)*uy, 0, tlen);
-      if (t < stopD && Math.hypot(ex+ux*t - h.x, ey+uy*t - h.y) < 42) {
+      if (t < stopD && Math.hypot(ex+ux*t - h.x, ey+uy*t - h.y) < 34*HELI_SCALE) {
         stopD = t; hitHeli = h; hitSupe = null; hitB = null;
       }
     }
@@ -4421,11 +4428,12 @@ function drawLamplighter(l) {
   cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(x-w/2, y-74, w, 7);
   cx.fillStyle = '#ff8a3a'; cx.fillRect(x-w/2, y-74, w*hpFrac, 7);
 }
+const HELI_SCALE = 1.5;   // was 1.25 — read a bit small against everything else at street scale
 function drawHeli(h) {
   const x = h.x - camX, y = h.y - camY;
-  if (x < -170 || x > VW+170) return;
+  if (x < -170*HELI_SCALE || x > VW+170*HELI_SCALE) return;
   const f = (P.x >= h.x) ? 1 : -1;
-  const hsc = 1.25;
+  const hsc = HELI_SCALE;
   cx.save(); cx.translate(x, y);
   if (h.falling) cx.rotate(h.rot);
   cx.scale(f*hsc, hsc);
