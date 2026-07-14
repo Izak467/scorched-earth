@@ -734,11 +734,12 @@ let deeps = [], fishes = [];
 let trains = [], tanks = [], sharks = [];
 let atrainDebris = [];   // A-Train's thrown-rubble answer to a player who just stays airborne
 let lamplighters = [], fireballs = [];
+let birds = [], birdTimer = rand(3, 7);   // pure ambient scenery — no hp, no combat, just life in the sky
 // each of these only starts ticking once its kill-threshold gate opens (see the spawn director),
 // so the value here is really "how long after the gate opens" — widened across all of them, and
 // the gates themselves spaced further apart in kills, so the whole cast doesn't debut in a pile
 // in the first few minutes the way it used to
-let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(60,90), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(70,100), deepTimer = rand(40,70), lamplighterTimer = rand(55,80);
+let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(60,90), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(70,100), deepTimer = rand(40,70), lamplighterTimer = rand(55,80), newsTimer = rand(20, 35);
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
 let deepArrivalT = -1;   // gameT the player first reached the dock — arms his fast first-spawn timer
 let trainTimer = rand(10,18), tankTimer = rand(18,28);
@@ -764,6 +765,7 @@ function shake(m) { shakeMag = Math.min(24, shakeMag + m * (1 - shakeMag/24)); }
 // boss kills are easy to lose in the chaos of a normal fight — make them unmistakable with a
 // banner, a hard flash/shake, and a much bigger sound than a regular kill
 let bossBanner = null;
+let slowmoT = 0, slowmoMax = 0.8;   // ticks down in real time while update() runs at a fraction of it — a proper slow-mo tail, not just a freeze
 function announceBossKill(name, x, y) {
   bossBanner = { text: name + ' TAKEN DOWN', life: 2.6, maxLife: 2.6 };
   bossFlashT = 0.35;
@@ -772,6 +774,8 @@ function announceBossKill(name, x, y) {
   // a beat of true freeze-frame (same mechanic thunderclap already uses) — a boss kill is rare
   // enough to earn a bigger one than anything else in the game gets
   freezeT = Math.max(freezeT, 0.12);
+  // ...followed by a slow-motion zoom-in that eases back to normal speed — see frame()/draw()
+  slowmoT = slowmoMax;
   for (let i=0;i<10;i++) rings.push({x, y, r: rand(4,16), life: rand(0.6,1.1), w: rand(3,6)});
 }
 let bossFlashT = 0;
@@ -858,11 +862,14 @@ function spawnStarlight() {
     smokeT: 0, flash: 0, boss: true, orbitDir, atkCd: rand(0.6,1.0),
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0 });
 }
-function spawnHeli() {
+function spawnHeli(newsCrew) {
   const side = Math.random()<0.5 ? -1 : 1;
   helis.push({ x: clamp(P.x + side*(VW*0.65+300), 150, WORLD_W-150), y: rand(350, 900),
     vx: 0, vy: 0, hp: 250, fireCd: rand(1.2,2.5), t: rand(0,9), dead: false, falling: false, rot: 0, smokeCd: 0,
-    holdDist: rand(340, 640), altOffset: rand(-220, 220) });   // per-heli hover spot, so they don't all converge to the same row
+    holdDist: rand(340, 640), altOffset: rand(-220, 220),   // per-heli hover spot, so they don't all converge to the same row
+    // news crew: same hovering hardware, just never arms itself — it's here to film the chaos,
+    // not add to it. Occasionally pops a camera flash instead of firing rockets.
+    newsCrew: !!newsCrew, flashCd: rand(1.5,3) });
 }
 // commercial jets: high-altitude background traffic — pure scenery/hazard, no AI, just fly straight through.
 // laser or plowing into them (dash, or just flying into one) blows them up; falling passengers use the faller system.
@@ -881,6 +888,21 @@ function jetDeath(j) {
   for (let i=0;i<10;i++) fallers.push({ x: j.x+rand(-70,70), y: j.y+rand(-16,16),
     vx: j.vx*0.3+rand(-60,60), vy: rand(-40,40), skin: '#c8a080', top: tops[randi(0,3)], life: 6, dead: false });
   shake(22); sfxBoom(); thump(45, 0.9, 0.5);
+}
+// birds: same "background traffic" idea as jets, but weightless — no hp, no collision damage,
+// nothing to kill. They just cruise across the sky in loose flocks and scatter when the player
+// (or an explosion) gets close, so the world reads a little more alive without adding a threat.
+function spawnBirdFlock() {
+  const side = Math.random()<0.5 ? -1 : 1;
+  const travelDir = Math.random()<0.5 ? -1 : 1;
+  const baseX = clamp(P.x + side*(VW*0.9+400), 200, WORLD_W-200);
+  const baseY = rand(90, 260);
+  const n = randi(4, 8);
+  for (let i=0;i<n;i++) {
+    const cvx = travelDir*rand(90,150), cvy = rand(-8,8);
+    birds.push({ x: baseX+rand(-70,70), y: baseY+rand(-30,30), vx: cvx, vy: cvy,
+      cvx, cvy, flapPhase: rand(0,7), flapSpeed: rand(9,13), scatterT: 0 });
+  }
 }
 // A-Train: ground/rooftop speedster boss — never flies, runs along surfaces and wall-runs
 // between ground and rooftops. His charge attack only moves horizontally along his current
@@ -2067,7 +2089,11 @@ function update(dt) {
   if (supeTimer <= 0 && supes.filter(s=>!s.boss).length < supeCap) { spawnSupe(); supeTimer = rand(8, 13); }
   heliTimer -= dt;
   const heliCap = Math.min(3, 1 + Math.floor(kills/50));
-  if (heliTimer <= 0 && helis.filter(h=>!h.dead).length < heliCap) { spawnHeli(); heliTimer = rand(8, 14); }
+  if (heliTimer <= 0 && helis.filter(h=>!h.dead && !h.newsCrew).length < heliCap) { spawnHeli(); heliTimer = rand(8, 14); }
+  // news crew: independent of the combat heli budget above, so it doesn't crowd out real threats —
+  // just one at a time, drifting in to film whatever's going on
+  newsTimer -= dt;
+  if (newsTimer <= 0 && !helis.some(h=>!h.dead && h.newsCrew)) { spawnHeli(true); newsTimer = rand(35, 60); }
   // villain timers only start ticking once their kill threshold is reached — hitting the
   // milestone kicks off the countdown, it isn't running quietly since the start of the game.
   // debut order: A-Train, then Lamplighter, then Starlight, then Maeve — gates spaced further
@@ -2313,12 +2339,20 @@ function update(dt) {
     h.y = clamp(h.y + h.vy*dt, 160, GROUND_Y-260);
     if (h.hp < 220 && Math.random() < dt*6)
       smokes.push({x:h.x+rand(-12,12), y:h.y-8, r:rand(5,10), vr:rand(14,24), vy:rand(-55,-25), life:rand(0.4,0.8), c:'rgba(88,80,92,'});
-    h.fireCd -= dt;
-    if (h.fireCd <= 0 && Math.abs(h.x-P.x) < VW*0.7) {
-      h.fireCd = rand(2.2, 3.4);
-      const a = Math.atan2(P.y - h.y, P.x - h.x);
-      rockets.push({ x: h.x, y: h.y+14, vx: Math.cos(a)*560, vy: Math.sin(a)*560, life: 3, t:0 });
-      noiseBurst(0.2, 800, 0.1, 'bandpass');
+    if (h.newsCrew) {
+      h.flashCd -= dt;
+      if (h.flashCd <= 0 && Math.abs(h.x-P.x) < VW*0.7) {
+        h.flashCd = rand(2, 4);
+        sparks.push({ x: h.x-14, y: h.y+6, vx: 0, vy: 0, life: 0.12, c: '#ffffff' });
+      }
+    } else {
+      h.fireCd -= dt;
+      if (h.fireCd <= 0 && Math.abs(h.x-P.x) < VW*0.7) {
+        h.fireCd = rand(2.2, 3.4);
+        const a = Math.atan2(P.y - h.y, P.x - h.x);
+        rockets.push({ x: h.x, y: h.y+14, vx: Math.cos(a)*560, vy: Math.sin(a)*560, life: 3, t:0 });
+        noiseBurst(0.2, 800, 0.1, 'bandpass');
+      }
     }
   }
   // same deal as supes — multiple helis targeting the same side of the player collapse onto
@@ -2363,6 +2397,27 @@ function update(dt) {
     if (dist2(P.x,P.y,j.x,j.y) < (80*JET_SCALE)*(80*JET_SCALE)) jetDeath(j);
   }
   jets = jets.filter(j => !j.dead && Math.abs(j.x-P.x) < VW*3);
+
+  // ── birds: ambient flocks, scatter when the player (or a big shake) gets close ──
+  birdTimer -= dt;
+  if (birdTimer <= 0 && birds.length < 28) { spawnBirdFlock(); birdTimer = rand(9, 16); }
+  for (const b of birds) {
+    b.flapPhase += dt*b.flapSpeed;
+    if (b.scatterT > 0) { b.scatterT -= dt; }
+    else {
+      b.vx += (b.cvx - b.vx) * Math.min(1, dt*2);
+      b.vy += (b.cvy - b.vy) * Math.min(1, dt*2);
+      const dx = b.x-P.x, dy = b.y-P.y, d = Math.hypot(dx,dy) || 1;
+      // a nearby thunderclap/boss-kill shake reads as "something huge just happened" just as
+      // well as the player physically closing the distance does
+      if (d < 240 || shakeMag > 10) {
+        b.scatterT = rand(0.6, 1.1);
+        b.vx = (dx/d)*rand(260,360); b.vy = (dy/d)*rand(180,260) - 60;
+      }
+    }
+    b.x += b.vx*dt; b.y += b.vy*dt;
+  }
+  birds = birds.filter(b => Math.abs(b.x-P.x) < VW*2.5);
 
   // ── broken hydrants: a lingering water geyser instead of an instant one-off splash ──
   for (const p of streetProps) if (p.type === 'hydrant' && p.geyserT > 0) {
@@ -4132,6 +4187,17 @@ function drawJet(j) {
   cx.fillRect(-50,-1.2,100,2.4);
   cx.restore();
 }
+function drawBirds() {
+  cx.strokeStyle = 'rgba(28,26,32,0.7)'; cx.lineWidth = 2; cx.lineCap = 'round';
+  for (const b of birds) {
+    const x = b.x - camX, y = b.y - camY;
+    if (x < -30 || x > VW+30 || y < -30 || y > VH+30) continue;
+    const flap = Math.sin(b.flapPhase) * (b.scatterT > 0 ? 9 : 6);
+    cx.beginPath();
+    cx.moveTo(x-8, y-flap); cx.lineTo(x, y+2); cx.lineTo(x+8, y-flap);
+    cx.stroke();
+  }
+}
 function drawEmbers() {
   for (const e of embers) {
     const x = e.x - camX, y = e.y - camY;
@@ -4437,10 +4503,19 @@ function drawHeli(h) {
   cx.save(); cx.translate(x, y);
   if (h.falling) cx.rotate(h.rot);
   cx.scale(f*hsc, hsc);
-  cx.fillStyle = '#232a26'; cx.fillRect(-58, -5, 44, 8);
-  cx.fillStyle = '#2c352f'; cx.fillRect(-62, -14, 8, 18);
-  cx.fillStyle = '#2c352f';
+  cx.fillStyle = h.newsCrew ? '#274a7a' : '#232a26'; cx.fillRect(-58, -5, 44, 8);
+  cx.fillStyle = h.newsCrew ? '#2f5690' : '#2c352f'; cx.fillRect(-62, -14, 8, 18);
+  cx.fillStyle = h.newsCrew ? '#2f5690' : '#2c352f';
   cx.beginPath(); cx.ellipse(0, 0, 26, 15, 0, 0, 7); cx.fill();
+  if (h.newsCrew) {
+    // press livery: a white band across the hull and a camera rig slung under the nose, in place
+    // of the plain military paint job — this one's here to film, not to shoot
+    cx.fillStyle = '#eae4d4'; cx.fillRect(-24, -3, 34, 5);
+    cx.fillStyle = '#c23b2e'; cx.beginPath(); cx.arc(-14, -0.5, 3, 0, 7); cx.fill();
+    cx.fillStyle = '#1a1f1c'; cx.fillRect(6, 6, 4, 10);
+    cx.fillStyle = '#161a18'; cx.beginPath(); cx.arc(8, 17, 5, 0, 7); cx.fill();
+    cx.fillStyle = 'rgba(150,210,235,0.7)'; cx.beginPath(); cx.arc(8, 17, 2.2, 0, 7); cx.fill();
+  }
   cx.fillStyle = 'rgba(150,210,235,0.55)';
   cx.beginPath(); cx.ellipse(12, -3, 11, 8, 0, 0, 7); cx.fill();
   cx.fillStyle = '#1a1f1c'; cx.fillRect(-8, 12, 22, 7);
@@ -4742,7 +4817,14 @@ function draw() {
   // keep re-rolling a random jitter every frame at whatever magnitude it was at the moment you paused
   const shk = paused ? 0 : shakeMag;
   cx.translate(rand(-shk, shk), rand(-shk, shk));
+  // slow-mo finisher: a punch-in on the kill that eases back out to normal over the tail — see
+  // announceBossKill/frame()
+  if (slowmoT > 0) {
+    const zoomAmt = 1 + 0.12 * clamp(slowmoT/slowmoMax, 0, 1);
+    cx.translate(VW/2, VH/2); cx.scale(zoomAmt, zoomAmt); cx.translate(-VW/2, -VH/2);
+  }
   drawSky();
+  drawBirds();
   drawEmbers();
   for (const j of jets) if (!j.dead) drawJet(j);
   drawCity();
@@ -4875,7 +4957,10 @@ function frame(now) {
   lastT = now;
   if (freezeT > 0) { freezeT -= dt; draw(); requestAnimationFrame(frame); return; }
   if (introActive) { updateIntro(dt); draw(); requestAnimationFrame(frame); return; }
-  if (!paused) update(dt);
+  if (!paused) {
+    if (slowmoT > 0) { slowmoT -= dt; update(dt * 0.22); }
+    else update(dt);
+  }
   draw();
   requestAnimationFrame(frame);
 }
@@ -4883,6 +4968,7 @@ for (let i=0;i<20;i++) spawnGrunt(false);
 for (let i=0;i<5;i++) spawnGrunt(true);
 for (let i=0;i<60;i++) spawnCiv();
 for (let i=0;i<18;i++) spawnCar();
+for (let i=0;i<3;i++) spawnBirdFlock();
 setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 16000);
 if (!isMobile) requestAnimationFrame(frame);
 </script>
