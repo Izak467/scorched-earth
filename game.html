@@ -557,8 +557,15 @@ function noiseBurst(dur, freq, vol, type) {
   const g = AC.createGain(); g.gain.value = vol;
   src.connect(f); f.connect(g); g.connect(master); src.start();
 }
+let lastThumpT = -1;
 function thump(freq, dur, vol) {
   if (!AC || muted) return;
+  // several of these can fire in the same frame during a pile-up (a cluster of grunts drowning
+  // together, a fish volley landing at once, dock chaos in general) — without a floor between
+  // them they all sum at the destination and clip regardless of the bus compressor, which is
+  // what actually reads as "crackle" rather than just "loud"
+  if (gameT - lastThumpT < 0.025) return;
+  lastThumpT = gameT;
   const o = AC.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(freq, AC.currentTime);
   o.frequency.exponentialRampToValueAtTime(Math.max(28,freq*0.4), AC.currentTime+dur);
   const g = AC.createGain(); g.gain.setValueAtTime(vol, AC.currentTime);
@@ -765,17 +772,11 @@ function shake(m) { shakeMag = Math.min(24, shakeMag + m * (1 - shakeMag/24)); }
 // boss kills are easy to lose in the chaos of a normal fight — make them unmistakable with a
 // banner, a hard flash/shake, and a much bigger sound than a regular kill
 let bossBanner = null;
-let slowmoT = 0, slowmoMax = 0.8;   // ticks down in real time while update() runs at a fraction of it — a proper slow-mo tail, not just a freeze
 function announceBossKill(name, x, y) {
   bossBanner = { text: name + ' TAKEN DOWN', life: 2.6, maxLife: 2.6 };
   bossFlashT = 0.35;
   shake(30);
   sfxBoom(); thump(30, 1.1, 0.55);
-  // a beat of true freeze-frame (same mechanic thunderclap already uses) — a boss kill is rare
-  // enough to earn a bigger one than anything else in the game gets
-  freezeT = Math.max(freezeT, 0.12);
-  // ...followed by a slow-motion zoom-in that eases back to normal speed — see frame()/draw()
-  slowmoT = slowmoMax;
   for (let i=0;i<10;i++) rings.push({x, y, r: rand(4,16), life: rand(0.6,1.1), w: rand(3,6)});
 }
 let bossFlashT = 0;
@@ -860,7 +861,7 @@ function spawnStarlight() {
   supes.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
     vx: 0, vy: 0, hp: 1400, maxHp: 1400, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
     smokeT: 0, flash: 0, boss: true, orbitDir, atkCd: rand(0.6,1.0),
-    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0 });
+    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0, knockT: 0 });
 }
 function spawnHeli(newsCrew) {
   const side = Math.random()<0.5 ? -1 : 1;
@@ -1020,7 +1021,7 @@ function spawnLamplighter() {
     vx: 0, vy: 0, hp: 1250, maxHp: 1250, dead: false, orbitDir,
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.6,2.4),
     breathing: false, breatheT: 0, breatheCd: rand(3.5,5), breatheHitCd: 0, atkCd: rand(0.5,0.8),
-    smokeT: 0, flash: 0, launchedT: 0, facing: 1 });
+    smokeT: 0, flash: 0, launchedT: 0, facing: 1, knockT: 0 });
 }
 function lamplighterDeath(l) {
   if (l.dead) return;
@@ -1110,6 +1111,9 @@ const DASH_DMG_MULT = 0.9;    // dash/punch-through damage dialed back 10% to co
 // an upward dash-punch already sends a supe flying with real velocity — this rewards following
 // up on that airborne window instead of it just being incidental knockback
 const JUGGLE_DMG_MULT = 1.5;
+// dashing into Starlight or Lamplighter sends them flying hard enough to crash clean through a
+// building if one's in the way — see the crash-through carving on their movement update
+const BOSS_KB = 1600;
 // a raw "is vy pointing up fast" check also fired constantly during Starlight's normal flight
 // (she's always juking/repositioning), so it's a real flag set only by an actual player launch instead
 function isJuggled(s) { return s.launchedT > 0; }
@@ -1455,29 +1459,14 @@ function update(dt) {
       // for a boss — but checking it either way costs nothing and keeps this branch uniform
       if (s.boss && P.dashHitSet.has(s)) continue;
       P.dashHitSet.add(s);
-      // a down-angled dash into a boss that's already juggled is a spike finisher — a bigger hit
-      // that drives them hard toward the ground and ends the juggle, instead of extending it further
-      const spiking = s.boss && P.dashDir.y > 0.5 && isJuggled(s);
       // checked before this dash's own launch below — rewards catching a target already airborne
       // from an earlier hit, not just this one
-      const juggleMult = isJuggled(s) ? (spiking ? JUGGLE_DMG_MULT*1.6 : JUGGLE_DMG_MULT) : 1;
-      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*juggleMult*streakMult() : 0;
-      if (spiking) {
-        s.vx *= 0.2; s.vy = 1400; s.launchedT = 0;
-        shake(16); freezeT = Math.max(freezeT, 0.08); sfxBoom();
-        rings.push({x:s.x,y:s.y,r:16,life:0.5,w:7});
-      } else {
-        // full knockback on the hit that actually launches them (that's the haymaker); once
-        // they're already airborne, follow-up hits stay light so they don't get scattered out of
-        // combo range — otherwise every extension would also be shoving them further away
-        const kb = isJuggled(s) ? 120 : 400;
-        s.vx += P.dashDir.x*kb; s.vy += P.dashDir.y*kb;
-        // an upward-angled punch launches into a fresh juggle window; any other angle into an
-        // already-juggled target extends it instead of dropping it — that's the real combo lever,
-        // not needing more directions to hit from
-        if (P.dashDir.y < -0.3) s.launchedT = 0.9;
-        else if (isJuggled(s)) s.launchedT = Math.min(s.launchedT + 0.5, 1.4);
-      }
+      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*(isJuggled(s) ? JUGGLE_DMG_MULT : 1)*streakMult() : 0;
+      // a real haymaker — hard enough to send a boss clean through a building if one's in the
+      // way (see the crash-through carving in the boss movement update below)
+      s.vx += P.dashDir.x*BOSS_KB; s.vy += P.dashDir.y*BOSS_KB;
+      if (s.boss) s.knockT = 0.45;
+      if (P.dashDir.y < -0.3) s.launchedT = 0.9;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     }
@@ -1515,22 +1504,11 @@ function update(dt) {
     }
     for (const l of lamplighters) if (!l.dead && !P.dashHitSet.has(l) && dist2(P.x,P.y,l.x,l.y) < 72*72) {
       P.dashHitSet.add(l);
-      // same spike-finisher rule as Starlight above — see the matching comment there
-      const spiking = P.dashDir.y > 0.5 && isJuggled(l);
-      const juggleMult = isJuggled(l) ? (spiking ? JUGGLE_DMG_MULT*1.6 : JUGGLE_DMG_MULT) : 1;
-      l.hp -= 380*DASH_DMG_MULT*juggleMult*streakMult();
-      if (spiking) {
-        l.vx *= 0.2; l.vy = 1400; l.launchedT = 0;
-        shake(16); freezeT = Math.max(freezeT, 0.08); sfxBoom();
-        rings.push({x:l.x,y:l.y,r:16,life:0.5,w:7});
-      } else {
-        // see the matching comment on Starlight above — light knockback on juggle extensions so
-        // repeat hits don't scatter the combo out of reach
-        const kb = isJuggled(l) ? 120 : 400;
-        l.vx += P.dashDir.x*kb; l.vy += P.dashDir.y*kb;
-        if (P.dashDir.y < -0.3) l.launchedT = 0.9;
-        else if (isJuggled(l)) l.launchedT = Math.min(l.launchedT + 0.5, 1.4);
-      }
+      l.hp -= 380*DASH_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1)*streakMult();
+      // same haymaker as Starlight above — see the matching comment there
+      l.vx += P.dashDir.x*BOSS_KB; l.vy += P.dashDir.y*BOSS_KB;
+      l.knockT = 0.45;
+      if (P.dashDir.y < -0.3) l.launchedT = 0.9;
       rings.push({x:l.x,y:l.y,r:10,life:0.4,w:3});
       if (l.hp<=0) lamplighterDeath(l);
     }
@@ -2207,6 +2185,17 @@ function update(dt) {
       sparks.push({x:s.x+rand(-10,10), y:s.y+rand(-14,14), vx:rand(-30,30), vy:rand(-80,-20), life:rand(0.3,0.7), c:'#555560'});
     const dx = P.x - s.x, dy = P.y - s.y, d = Math.hypot(dx,dy) || 1;
     if (s.boss) {
+      if (s.knockT > 0) {
+        // sent flying by a hard dash hit — carves straight through anything in the way instead
+        // of just gliding over it, and skips the normal AI/speed clamp for a beat so a real
+        // haymaker actually reads as one instead of snapping back to cruise speed next frame
+        s.knockT -= dt; s.dashing = false;
+        damageCellsInRadius(s.x, s.y, 34, 1);
+        s.x = clamp(s.x + s.vx*dt, 60, WORLD_W-60);
+        s.y = clamp(s.y + s.vy*dt, 120, GROUND_Y-200);
+        s.vx -= s.vx*0.6*dt; s.vy -= s.vy*0.6*dt;   // light drag — settles back into normal flight once it expires
+        continue;
+      }
       if (s.dashing) {
         // a committed close-range dash — connects for a solid shove, never a stun (only the
         // bolts stun); half the knockback of Maeve's lunge since this is the cheaper, faster attack
@@ -3038,6 +3027,16 @@ function update(dt) {
     l.smokeT -= dt; l.flash -= dt;
     if (l.launchedT > 0) l.launchedT -= dt;
     const dx = P.x-l.x, dy = P.y-l.y, d = Math.hypot(dx,dy) || 1;
+
+    if (l.knockT > 0) {
+      // same hard-knockback flight as Starlight — see the matching comment on her update
+      l.knockT -= dt; l.dashing = false; l.breathing = false;
+      damageCellsInRadius(l.x, l.y, 34, 1);
+      l.x = clamp(l.x + l.vx*dt, 60, WORLD_W-60);
+      l.y = clamp(l.y + l.vy*dt, 120, GROUND_Y-200);
+      l.vx -= l.vx*0.6*dt; l.vy -= l.vy*0.6*dt;
+      continue;
+    }
 
     if (l.breathing) {
       // close-range dragon-breath cone: holds roughly in place and channels toward the player,
@@ -4817,12 +4816,6 @@ function draw() {
   // keep re-rolling a random jitter every frame at whatever magnitude it was at the moment you paused
   const shk = paused ? 0 : shakeMag;
   cx.translate(rand(-shk, shk), rand(-shk, shk));
-  // slow-mo finisher: a punch-in on the kill that eases back out to normal over the tail — see
-  // announceBossKill/frame()
-  if (slowmoT > 0) {
-    const zoomAmt = 1 + 0.12 * clamp(slowmoT/slowmoMax, 0, 1);
-    cx.translate(VW/2, VH/2); cx.scale(zoomAmt, zoomAmt); cx.translate(-VW/2, -VH/2);
-  }
   drawSky();
   drawBirds();
   drawEmbers();
@@ -4957,10 +4950,7 @@ function frame(now) {
   lastT = now;
   if (freezeT > 0) { freezeT -= dt; draw(); requestAnimationFrame(frame); return; }
   if (introActive) { updateIntro(dt); draw(); requestAnimationFrame(frame); return; }
-  if (!paused) {
-    if (slowmoT > 0) { slowmoT -= dt; update(dt * 0.22); }
-    else update(dt);
-  }
+  if (!paused) update(dt);
   draw();
   requestAnimationFrame(frame);
 }
