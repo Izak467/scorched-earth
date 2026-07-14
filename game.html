@@ -462,8 +462,13 @@ function fmt$(v) {
   return '$' + Math.round(v);
 }
 function addDamage(v) { damage$ += v; document.getElementById('dmg').textContent = fmt$(damage$) + ' DAMAGE'; }
-function addKill() {
-  kills++; streak++; streakT = 2.6;
+// fodder (civilians, parked/passing traffic, ragdolled bodies) still counts toward the kill
+// counter for flavor, but never builds streak — otherwise flying over a crowd would be a free,
+// risk-free way to buff yourself against actual threats. Only kills against things that can
+// fight back (grunts, supes, bosses, military hardware) build the streak.
+function addKill(fodder) {
+  kills++;
+  if (!fodder) { streak++; streakT = 2.6; }
   document.getElementById('kills').textContent = kills + ' KILLS';
 }
 
@@ -494,11 +499,24 @@ window.addEventListener('keydown', e => {
     } else if (rapid) startDash(dir);
     lastTap[dir] = now;
   }
-  if (e.code === 'Space') thunderclap();
+  // Space is now tap-vs-hold: a quick tap fires the normal thunderclap on release (below), holding
+  // it charges into a bigger AoE slam — see the matching keyup handler and thunderclap(chargeFrac)
+  if (e.code === 'Space' && !P.clapCharging && P.clapCd <= 0 && !paused && P.stunT <= 0 && !introActive) {
+    P.clapCharging = true; P.clapChargeT = 0;
+  }
   if (e.code === 'KeyM') muted = !muted;
   if (e.code === 'KeyP' || e.code === 'Escape') paused = !paused;
 });
-window.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('keyup', e => {
+  keys[e.code] = false;
+  if (e.code === 'Space' && P.clapCharging) {
+    // held past the tap window: scales the clap's size with how long it was charged, clamped at
+    // CLAP_CHARGE_MAX so there's no reward for holding it even longer than that
+    const f = P.clapChargeT >= CLAP_TAP_MAX ? clamp(P.clapChargeT / CLAP_CHARGE_MAX, 0, 1) : 0;
+    P.clapCharging = false; P.clapChargeT = 0;
+    thunderclap(f);
+  }
+});
 window.addEventListener('mousemove', e => { mouseSX = e.clientX; mouseSY = e.clientY; });
 window.addEventListener('mousedown', e => { if (e.button===0){ firing = true; audioBoot(); } });
 window.addEventListener('mouseup',   e => { if (e.button===0) firing = false; });
@@ -562,6 +580,7 @@ const P = {
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
   grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
   underwaterT: 0, wasUnder: false, carried: false, slamStartY: 0, dashHitSet: new Set(),
+  beamDash: false, clapCharging: false, clapChargeT: 0,
 };
 const inWater = (x, y) => x > WATER_X && y > GROUND_Y;
 // world-space street lamp positions (matches the visual spacing in drawCity) — used as light-ball spawn points
@@ -623,29 +642,39 @@ function startDash(dir) {
   P.dashHitSet.clear();
   P.dashCd = 0.55;
   P.grounded = false; P.hopping = false;   // any dash-punch launches him back into flight
-  shake(6); sfxDash();
+  // dashing with the laser already held turns this into a piercing beam-dash — a much wider
+  // swath of cell damage carved ahead of him each frame instead of the small contact-point clear
+  // a cold dash leaves, on top of the laser itself still firing normally from the mouse aim
+  P.beamDash = firing && P.stunT <= 0;
+  shake(P.beamDash ? 9 : 6); sfxDash(); if (P.beamDash) sfxCrack();
 }
-function thunderclap() {
+const CLAP_TAP_MAX = 0.18, CLAP_CHARGE_MAX = 1.1;   // below this hold time it's a plain tap; scales up to this
+function thunderclap(chargeFrac) {
   if (P.clapCd > 0 || paused || P.stunT > 0 || introActive) return;
-  P.clapCd = 2.4;
-  freezeT = Math.max(freezeT, 0.06);
-  const R = 320;
-  rings.push({x:P.x, y:P.y, r:14, life:0.5, w:6});
-  rings.push({x:P.x, y:P.y, r:2, life:0.7, w:3});
+  const f = chargeFrac || 0;
+  const dmgMult = 1 + f*1.3;
+  const R = 320 * (1 + f*0.55);
+  const KB = 900 * (1 + f*0.4);
+  P.clapCd = 2.4 + f*2.2;   // a bigger nuke earns a longer cooldown
+  freezeT = Math.max(freezeT, 0.06 + f*0.12);
+  rings.push({x:P.x, y:P.y, r:14, life:0.5+f*0.3, w:6+f*4});
+  rings.push({x:P.x, y:P.y, r:2, life:0.7+f*0.3, w:3});
+  if (f > 0.5) rings.push({x:P.x, y:P.y, r:8, life:0.6, w:10});   // extra ring so a big clap reads as bigger at a glance, not just louder
   // dust torus
-  for (let i=0;i<14;i++) {
+  const nDust = Math.round(14 * (1 + f*0.8));
+  for (let i=0;i<nDust;i++) {
     const a = rand(0,7);
-    smokes.push({ x:P.x+Math.cos(a)*60, y:P.y+Math.sin(a)*60, r:rand(10,20), vr:rand(60,110),
+    smokes.push({ x:P.x+Math.cos(a)*60, y:P.y+Math.sin(a)*60, r:rand(10,20)*(1+f*0.3), vr:rand(60,110),
       vy:Math.sin(a)*40, life:rand(0.5,0.9), c:'rgba(150,140,150,' });
   }
-  shake(14); sfxBoom(); thump(40, 0.5, 0.4);
+  shake(14 + f*14); sfxBoom(); thump(40 - f*8, 0.5 + f*0.3, 0.4 + f*0.3);
   // physical blast: shove every loose thing outward
   const shoveAll = (arr, mult) => { for (const g of arr) {
     const d = Math.hypot(g.x-P.x, g.y-P.y);
-    if (d < R*1.4 && d > 1) { const f = (1 - d/(R*1.4)) * mult;
-      g.vx += (g.x-P.x)/d * f; g.vy += (g.y-P.y)/d * f - f*0.25; }
+    if (d < R*1.4 && d > 1) { const fr = (1 - d/(R*1.4)) * mult;
+      g.vx += (g.x-P.x)/d * fr; g.vy += (g.y-P.y)/d * fr - fr*0.25; }
   }};
-  shoveAll(gibs, 900); shoveAll(debris, 900); shoveAll(bloods, 700); shoveAll(sparks, 500);
+  shoveAll(gibs, KB); shoveAll(debris, KB); shoveAll(bloods, KB*0.78); shoveAll(sparks, KB*0.56);
   // kills fly AWAY from you
   for (const g of grunts) if (!g.dead && dist2(g.x,g.y-16,P.x,P.y) < R*R) {
     g.dead=true; const d=Math.hypot(g.x-P.x,g.y-P.y)||1;
@@ -653,47 +682,47 @@ function thunderclap() {
   }
   for (const c of civs) if (!c.dead && dist2(c.x,c.y-14,P.x,P.y) < R*R) {
     c.dead=true; const d=Math.hypot(c.x-P.x,c.y-P.y)||1;
-    gibBurst(c.x, c.y-14, 1.1, false, (c.x-P.x)/d*420, (c.y-14-P.y)/d*420 - 120); addKill();
+    gibBurst(c.x, c.y-14, 1.1, false, (c.x-P.x)/d*420, (c.y-14-P.y)/d*420 - 120); addKill(true);
   }
   for (const car of cars) if (!car.dead && dist2(car.x,car.y-10,P.x,P.y) < R*R) carBoom(car);
   for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,P.x,P.y) < R*R) {
-    s.hp -= 70; const d=Math.hypot(s.x-P.x,s.y-P.y)||1;
-    s.vx += (s.x-P.x)/d*900; s.vy += (s.y-P.y)/d*900;
+    s.hp -= 70*dmgMult; const d=Math.hypot(s.x-P.x,s.y-P.y)||1;
+    s.vx += (s.x-P.x)/d*KB; s.vy += (s.y-P.y)/d*KB;
     if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
   }
-  for (const h of helis) if (!h.dead && dist2(h.x,h.y,P.x,P.y) < R*R) { h.hp -= 130; h.vx += (h.x-P.x)>0?300:-300; if (h.hp<=0) heliDeath(h); }
+  for (const h of helis) if (!h.dead && dist2(h.x,h.y,P.x,P.y) < R*R) { h.hp -= 130*dmgMult; h.vx += (h.x-P.x)>0?300:-300; if (h.hp<=0) heliDeath(h); }
   for (const a of atrains) if (!a.dead && dist2(a.x,a.y-16,P.x,P.y) < R*R) {
-    a.hp -= 90;
+    a.hp -= 90*dmgMult;
     if (a.hp<=0) atrainDeath(a);
   }
   for (const a of maeves) if (!a.dead && !maeveBraced(a) && dist2(a.x,a.y-16,P.x,P.y) < R*R) {
-    a.hp -= 90;
+    a.hp -= 90*dmgMult;
     if (a.hp<=0) maeveDeath(a);
   }
   for (const dp of deeps) if (!dp.dead && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
-    dp.hp -= 90*deepDamageMult(dp);
+    dp.hp -= 90*dmgMult*deepDamageMult(dp);
     if (dp.hp<=0) deepDeath(dp);
   }
   for (const l of lamplighters) if (!l.dead && dist2(l.x,l.y,P.x,P.y) < R*R) {
-    l.hp -= 90; const d=Math.hypot(l.x-P.x,l.y-P.y)||1;
-    l.vx += (l.x-P.x)/d*900; l.vy += (l.y-P.y)/d*900;
+    l.hp -= 90*dmgMult; const d=Math.hypot(l.x-P.x,l.y-P.y)||1;
+    l.vx += (l.x-P.x)/d*KB; l.vy += (l.y-P.y)/d*KB;
     if (l.hp<=0) lamplighterDeath(l);
   }
   for (const tk of tanks) if (!tk.dead && dist2(tk.x,tk.y-20*TANK_SCALE,P.x,P.y) < R*R) {
-    tk.hp -= 150;
+    tk.hp -= 150*dmgMult;
     if (tk.hp<=0) tankDeath(tk);
   }
   for (const s of sharks) if (!s.dead && dist2(s.x,s.y,P.x,P.y) < R*R) sharkDeath(s);
   for (const t of trains) for (let i=0;i<t.cars.length;i++) {
     const c = t.cars[i]; if (c.dead) continue;
     const cxw = trainCarX(t, i);
-    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
+    if (dist2(cxw, RAIL_Y-CAR_CENTER_OFF, P.x, P.y) < R*R) { c.hp -= 130*dmgMult; if (c.hp <= 0) trainCarDeath(t, i, cxw); }
   }
   // detonate incoming rockets/fireballs mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
   for (const fb of fireballs) if (dist2(fb.x,fb.y,P.x,P.y) < (R*1.2)*(R*1.2)) fb.life = 0;
-  damageCellsInRadius(P.x, P.y, 140, 0.7);
-  panicNear(P.x, 800);
+  damageCellsInRadius(P.x, P.y, 140*(1+f*0.5), 0.7 + f*0.3);
+  panicNear(P.x, 800*(1+f*0.3));
 }
 
 // ─── Entities ───
@@ -1062,6 +1091,9 @@ const JUGGLE_DMG_MULT = 1.5;
 // a raw "is vy pointing up fast" check also fired constantly during Starlight's normal flight
 // (she's always juking/repositioning), so it's a real flag set only by an actual player launch instead
 function isJuggled(s) { return s.launchedT > 0; }
+// combat streak (see addKill) buffs dash/laser damage against bosses — caps at +30% so it rewards
+// staying aggressive without letting a long streak trivialize a fight on its own
+function streakMult() { return 1 + Math.min(streak, 10) * 0.03; }
 const LASER_CELL_RATE = 16.5 * LASER_DMG_MULT;   // fill-per-second on a cell the beam (or player) is drilling through
 const JET_SCALE = 2.3;
 const SHARK_SCALE = 1.3;   // a bit bigger — easier to actually make out against the dark water
@@ -1105,7 +1137,7 @@ function killWindowCiv(b, ci, cj) {
   for (const w of b.wins) if (w.c===bc && w.r===br && w.civ && !w.civDead) {
     w.civDead = true;
     gibBurst(b.x + bc*CW*2 + CW, b.roofY + br*CH*2 + CH, 1);
-    addKill();
+    addKill(true);
   }
 }
 function damageCellsInRadius(x, y, r, frac) {
@@ -1244,7 +1276,7 @@ function explode(x, y, r, cellFrac, hostile, scale, noRing) {
   }
   if (!hostile) {
     for (const g of grunts) if (!g.dead && dist2(g.x,g.y-16,x,y) < r*r) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
-    for (const c of civs) if (!c.dead && dist2(c.x,c.y-14,x,y) < r*r) { c.dead=true; gibBurst(c.x,c.y-14,1.1); addKill(); }
+    for (const c of civs) if (!c.dead && dist2(c.x,c.y-14,x,y) < r*r) { c.dead=true; gibBurst(c.x,c.y-14,1.1); addKill(true); }
     for (const car of cars) if (!car.dead && dist2(car.x,car.y-10,x,y) < r*r) carBoom(car);
     for (const s of supes) if (s.hp>0 && dist2(s.x,s.y,x,y) < r*r) { s.hp -= 55; if (s.hp<=0) { gibBurst(s.x,s.y,1.5,true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } } }
   }
@@ -1266,7 +1298,7 @@ function carBoom(car) {
   if (car.dead) return;
   car.dead = true;
   addDamage(car.police ? 65000 : car.kind==='truck' ? 48000 : 22000);
-  addKill();  // driver
+  addKill(true);  // driver — no threat, so cars don't build streak either
   const big = car.kind === 'truck';
   gibBurst(car.x, car.y-12, big ? 1.1 : 0.85);
   // no fireball for cars — just a quick spark pop, no AOE/splash, no smoke/ring particles
@@ -1339,6 +1371,19 @@ function update(dt) {
   gameT += dt;
   P.dashCd = Math.max(0, P.dashCd - dt);
   P.clapCd = Math.max(0, P.clapCd - dt);
+  if (P.clapCharging) {
+    // getting hit mid-charge forfeits it outright rather than firing a weak clap — committing to
+    // a big charge is a real risk, not a free action
+    if (P.stunT > 0 || paused) { P.clapCharging = false; P.clapChargeT = 0; }
+    else {
+      P.clapChargeT = Math.min(P.clapChargeT + dt, CLAP_CHARGE_MAX);
+      if (Math.random() < dt*22) {
+        const a = rand(0,7), rr = rand(20, 46 + P.clapChargeT*40);
+        sparks.push({ x:P.x+Math.cos(a)*rr, y:P.y+Math.sin(a)*rr, vx:-Math.cos(a)*140, vy:-Math.sin(a)*140,
+          life:rand(0.15,0.3), c:'#ffdd88' });
+      }
+    }
+  }
   P.stunT = Math.max(0, P.stunT - dt);
   boltLockout = Math.max(0, boltLockout - dt);
   fireballLockout = Math.max(0, fireballLockout - dt);
@@ -1359,7 +1404,7 @@ function update(dt) {
     if (keys.KeyS||keys.ArrowDown) iy += 1;
   }
   const moving = (ix!==0 || iy!==0);
-  P.boost = clamp(P.boost + (moving ? dt/1.3 : -dt*1.9), 0, 1);
+  P.boost = clamp(P.boost + (moving ? dt/1.0 : -dt*1.9), 0, 1);   // ramps to full boost in ~1s instead of 1.3s
 
   if (P.dashT > 0) {
     P.dashT -= dt;
@@ -1368,7 +1413,7 @@ function update(dt) {
     P.vx = P.dashDir.x * dspd; P.vy = P.dashDir.y * dspd;
     afterimages.push({x:P.x, y:P.y, f:P.facing, a:0.5});
     for (const g of grunts) if (!g.dead && dist2(P.x,P.y,g.x,g.y-16) < 62*62) { g.dead=true; gibBurst(g.x,g.y-16,1.3,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
-    for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(); }
+    for (const c of civs) if (!c.dead && dist2(P.x,P.y,c.x,c.y-14) < 58*58) { c.dead=true; gibBurst(c.x,c.y-14,1.1,false,P.dashDir.x*300,P.dashDir.y*300); addKill(true); }
     for (const car of cars) if (!car.dead && dist2(P.x,P.y,car.x,car.y-10) < 64*64) carBoom(car);
     for (const p of streetProps) if (!p.dead) {
       if (p.type === 'light' && dist2(P.x,P.y,p.x,GROUND_Y-118) < 60*60) streetLightBoom(p);
@@ -1388,13 +1433,25 @@ function update(dt) {
       // for a boss — but checking it either way costs nothing and keeps this branch uniform
       if (s.boss && P.dashHitSet.has(s)) continue;
       P.dashHitSet.add(s);
+      // a down-angled dash into a boss that's already juggled is a spike finisher — a bigger hit
+      // that drives them hard toward the ground and ends the juggle, instead of extending it further
+      const spiking = s.boss && P.dashDir.y > 0.5 && isJuggled(s);
       // checked before this dash's own launch below — rewards catching a target already airborne
       // from an earlier hit, not just this one
-      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*(isJuggled(s) ? JUGGLE_DMG_MULT : 1) : 0;
-      s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
-      // only an upward-angled punch actually launches them into a juggle window — a sideways or
-      // downward dash is just a hit, not a setup
-      if (P.dashDir.y < -0.3) s.launchedT = 0.9;
+      const juggleMult = isJuggled(s) ? (spiking ? JUGGLE_DMG_MULT*1.6 : JUGGLE_DMG_MULT) : 1;
+      s.hp = s.boss ? s.hp - 380*DASH_DMG_MULT*juggleMult*streakMult() : 0;
+      if (spiking) {
+        s.vx *= 0.2; s.vy = 1400; s.launchedT = 0;
+        shake(16); freezeT = Math.max(freezeT, 0.08); sfxBoom();
+        rings.push({x:s.x,y:s.y,r:16,life:0.5,w:7});
+      } else {
+        s.vx += P.dashDir.x*400; s.vy += P.dashDir.y*400;
+        // an upward-angled punch launches into a fresh juggle window; any other angle into an
+        // already-juggled target extends it instead of dropping it — that's the real combo lever,
+        // not needing more directions to hit from
+        if (P.dashDir.y < -0.3) s.launchedT = 0.9;
+        else if (isJuggled(s)) s.launchedT = Math.min(s.launchedT + 0.5, 1.4);
+      }
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
     }
@@ -1432,9 +1489,19 @@ function update(dt) {
     }
     for (const l of lamplighters) if (!l.dead && !P.dashHitSet.has(l) && dist2(P.x,P.y,l.x,l.y) < 72*72) {
       P.dashHitSet.add(l);
-      l.hp -= 380*DASH_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1);
-      l.vx += P.dashDir.x*400; l.vy += P.dashDir.y*400;
-      if (P.dashDir.y < -0.3) l.launchedT = 0.9;
+      // same spike-finisher rule as Starlight above — see the matching comment there
+      const spiking = P.dashDir.y > 0.5 && isJuggled(l);
+      const juggleMult = isJuggled(l) ? (spiking ? JUGGLE_DMG_MULT*1.6 : JUGGLE_DMG_MULT) : 1;
+      l.hp -= 380*DASH_DMG_MULT*juggleMult*streakMult();
+      if (spiking) {
+        l.vx *= 0.2; l.vy = 1400; l.launchedT = 0;
+        shake(16); freezeT = Math.max(freezeT, 0.08); sfxBoom();
+        rings.push({x:l.x,y:l.y,r:16,life:0.5,w:7});
+      } else {
+        l.vx += P.dashDir.x*400; l.vy += P.dashDir.y*400;
+        if (P.dashDir.y < -0.3) l.launchedT = 0.9;
+        else if (isJuggled(l)) l.launchedT = Math.min(l.launchedT + 0.5, 1.4);
+      }
       rings.push({x:l.x,y:l.y,r:10,life:0.4,w:3});
       if (l.hp<=0) lamplighterDeath(l);
     }
@@ -1447,6 +1514,19 @@ function update(dt) {
     }
     for (const s of sharks) if (!s.dead && dist2(P.x,P.y,s.x,s.y) < (70*SHARK_SCALE)*(70*SHARK_SCALE)) sharkDeath(s);
     damageCellsInRadius(P.x + P.dashDir.x*24, P.y + P.dashDir.y*24, 46, 1);
+    // piercing beam-dash (see startDash): punches a full tunnel through whatever's ahead each frame,
+    // well beyond the small point-blank clear above — reads as blasting straight through a wall
+    // instead of just cracking the first layer of it
+    if (P.beamDash) {
+      for (let d = 40; d <= 260; d += 20) {
+        const px = P.x + P.dashDir.x*d, py = P.y + P.dashDir.y*d;
+        const cb = cellIntactAt(px, py);
+        if (cb) destroyCell(cb, cellIdx(cb, px, py), px, py);
+        if (Math.random() < 0.5) sparks.push({ x:px, y:py, vx:rand(-70,70), vy:rand(-70,70), life:rand(0.1,0.22), c:'#eaffee' });
+      }
+      for (const r of rockets) if (!r.gone && dist2(r.x,r.y,P.x,P.y) < 200*200) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
+      for (const fb of fireballs) if (dist2(fb.x,fb.y,P.x,P.y) < 200*200) fb.life = 0;
+    }
     // a slam from just above the ground and a slam from the top of the tallest building used to
     // land identically — scale the payoff with how far he actually fell, 1x for a short hop up to
     // 2x for clearing real altitude, so climbing high before slamming is worth it
@@ -1468,7 +1548,7 @@ function update(dt) {
       if (slamScale > 1.4) freezeT = Math.max(freezeT, 0.05);   // a genuinely big drop earns its own tiny hit-stop
       const R = 300*slamScale;
       for (const g of grunts) if (!g.dead && g.y > GROUND_Y-140 && Math.abs(g.x-P.x) < R) { g.dead=true; gibBurst(g.x,g.y-16,1.4,false,(g.x<P.x?-1:1)*300,-260); addKill(); }
-      for (const c of civs) if (!c.dead && Math.abs(c.x-P.x) < R) { c.dead=true; gibBurst(c.x,c.y-14,1.2,false,(c.x<P.x?-1:1)*300,-260); addKill(); }
+      for (const c of civs) if (!c.dead && Math.abs(c.x-P.x) < R) { c.dead=true; gibBurst(c.x,c.y-14,1.2,false,(c.x<P.x?-1:1)*300,-260); addKill(true); }
       for (const car of cars) if (!car.dead && Math.abs(car.x-P.x) < R) carBoom(car);
       damageCellsInRadius(P.x, GROUND_Y-40, 120*slamScale, 0.5);
     }
@@ -1504,10 +1584,11 @@ function update(dt) {
     if (P.dashCoastT > 0) P.dashCoastT -= dt;
     if (P.knockT > 0) P.knockT -= dt;
     const swim = inWater(P.x, P.y);
-    const ACC = (2600 + 1900*P.boost) * (swim ? 0.45 : 1);
+    const ACC = (2900 + 2100*P.boost) * (swim ? 0.45 : 1);
     const DRAG = swim ? 6.5 : (P.dashCoastT > 0 ? 1.7 : 5.0);
-    // acceleration curve (ACC) is untouched — only the ceiling on top speed moved, to 1.08x what it was
-    const MAX = 1.08 * (480 + 620*Math.pow(P.boost, 1.35)) * (swim ? 0.55 : 1);
+    // top speed raised again (1.08x -> 1.32x) and the boost ramp above now fills faster, so full
+    // flight speed both arrives sooner and reaches noticeably further than before
+    const MAX = 1.32 * (480 + 620*Math.pow(P.boost, 1.35)) * (swim ? 0.55 : 1);
     let nx = ix, ny = iy;
     if (nx&&ny) { nx*=0.7071; ny*=0.7071; }
     P.vx += nx*ACC*dt; P.vy += ny*ACC*dt;
@@ -1615,7 +1696,7 @@ function update(dt) {
     if (f.y >= s || f.life <= 0) {
       // splashing down in the water gibs just under the surface so the blood clouds out there
       gibBurst(f.x, f.x > WATER_X ? GROUND_Y + 30 : s, 1.1, false, f.vx*0.3, 0);
-      addKill(); f.dead = true;
+      addKill(true); f.dead = true;
     }
   }
   fallers = fallers.filter(f => !f.dead);
@@ -1768,7 +1849,7 @@ function update(dt) {
       if (Math.random()<0.35) embers.push({ x:beamEndX+rand(-6,6), y:beamEndY+rand(-6,6), vx:rand(-25,25), vy:rand(-90,-30), life:rand(0.4,0.8), r:rand(1,2.2) });
     } else if (hitSupe) {
       const s = hitSupe;
-      s.hp -= DPS*dt*(isJuggled(s) ? JUGGLE_DMG_MULT : 1); s.smokeT = 0.1; s.flash = 0.1;
+      s.hp -= DPS*dt*(isJuggled(s) ? JUGGLE_DMG_MULT : 1)*(s.boss ? streakMult() : 1); s.smokeT = 0.1; s.flash = 0.1;
       if (Math.random()<0.7) sparks.push({ x:beamEndX+rand(-5,5), y:beamEndY+rand(-6,6), vx:rand(-140,140), vy:rand(-180,20), life:rand(0.12,0.3), c:Math.random()<0.5?'#ffbb44':'#ff5533' });
       if (Math.random()<0.35) smokes.push({ x:s.x+rand(-8,8), y:s.y+rand(-10,6), r:rand(4,8), vr:rand(12,22), vy:rand(-50,-20), life:rand(0.35,0.7), c:'rgba(70,62,74,' });
       if (s.hp <= 0) { gibBurst(s.x, s.y, 1.5, true); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
@@ -1832,7 +1913,7 @@ function update(dt) {
           if (rHitB.cells[rHitI] >= 1) { rHitB.cells[rHitI] = 0.999; destroyCell(rHitB, rHitI, rEndX, rEndY); }
         }
         for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, rex, rey, rEndX, rEndY) < 16) { g.dead = true; gibBurst(g.x, g.y-16, 1); addKill(); }
-        for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, rex, rey, rEndX, rEndY) < 14) { c.dead = true; gibBurst(c.x, c.y-14, 1); addKill(); }
+        for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, rex, rey, rEndX, rEndY) < 14) { c.dead = true; gibBurst(c.x, c.y-14, 1); addKill(true); }
         for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, rex, rey, rEndX, rEndY) < 20) carBoom(car);
         mirrorBeam = { x1: rex, y1: rey, x2: rEndX, y2: rEndY };
         if (Math.random() < 0.7) {
@@ -1884,7 +1965,7 @@ function update(dt) {
       }
     } else if (hitLamp) {
       const l = hitLamp;
-      l.hp -= 380*dt*LASER_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1); l.smokeT = 0.1; l.flash = 0.1;
+      l.hp -= 380*dt*LASER_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1)*streakMult(); l.smokeT = 0.1; l.flash = 0.1;
       if (Math.random()<0.6) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-140,140),vy:rand(-160,20),life:rand(0.15,0.3),c:'#ff8a3a'});
       if (l.hp <= 0) lamplighterDeath(l);
     }
@@ -1893,7 +1974,7 @@ function update(dt) {
       g.dead = true; gibBurst(g.x, g.y-16, 1); addKill();
     }
     for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, ex, ey, beamEndX, beamEndY) < 14) {
-      c.dead = true; gibBurst(c.x, c.y-14, 1); addKill();
+      c.dead = true; gibBurst(c.x, c.y-14, 1); addKill(true);
     }
     for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, ex, ey, beamEndX, beamEndY) < 20) carBoom(car);
     for (const p of streetProps) if (!p.dead) {
@@ -1925,7 +2006,7 @@ function update(dt) {
     // fireballs are no longer stoppable by the laser — same rule as Starlight's electric bolts,
     // which never had a laser fodder-catch here to begin with
     for (const f of fallers) if (!f.dead && segDist(f.x, f.y-10, ex, ey, beamEndX, beamEndY) < 14) {
-      f.dead = true; gibBurst(f.x, f.y-10, 1); addKill();
+      f.dead = true; gibBurst(f.x, f.y-10, 1); addKill(true);
     }
     // containers/tanks/atrains/maeves/deep are now resolved up in the priority-blocking raycast
     // above (they stop the beam like buildings/supes/etc do) — only true fodder still gets a
@@ -2318,7 +2399,7 @@ function update(dt) {
         ct.y = restY; ct.vy = 0;
         if (restStable) {
           thump(80, 0.2, 0.2); shake(4);
-          for (const c of civs) if (!c.dead && !c.swim && c.x > ct.x-8 && c.x < ct.x+ct.w+8 && Math.abs(c.y - (ct.y+ct.h)) < 30) { c.dead=true; gibBurst(c.x,c.y-14,1.2); addKill(); }
+          for (const c of civs) if (!c.dead && !c.swim && c.x > ct.x-8 && c.x < ct.x+ct.w+8 && Math.abs(c.y - (ct.y+ct.h)) < 30) { c.dead=true; gibBurst(c.x,c.y-14,1.2); addKill(true); }
           for (const g of grunts) if (!g.dead && !g.air && !g.boatG && g.x > ct.x-8 && g.x < ct.x+ct.w+8 && Math.abs(g.y - (ct.y+ct.h)) < 30) { g.dead=true; gibBurst(g.x,g.y-16,1.2); addKill(); }
           ct.settled = true;
         }
@@ -2916,7 +2997,7 @@ function update(dt) {
       }
       for (const c of civs) if (!c.dead) {
         const cdx=c.x-l.x, cdy=(c.y-14)-l.y, cd=Math.hypot(cdx,cdy);
-        if (cd<range && Math.abs(angDiff(Math.atan2(cdy,cdx),ang))<halfAngle) { c.dead=true; gibBurst(c.x,c.y-14,1); addKill(); }
+        if (cd<range && Math.abs(angDiff(Math.atan2(cdy,cdx),ang))<halfAngle) { c.dead=true; gibBurst(c.x,c.y-14,1); addKill(true); }
       }
       for (const car of cars) if (!car.dead) {
         const kdx=car.x-l.x, kdy=(car.y-10)-l.y, kd=Math.hypot(kdx,kdy);
@@ -3264,7 +3345,7 @@ function update(dt) {
     if (g.x > WATER_X && g.y > GROUND_Y - 4 && g.vy > 120 && Math.random() < 0.5) splash(g.x, g.vy*0.3);
     if (g.x > WATER_X) continue;
     if (g.heavy && g.vy > 240) {
-      for (const c of civs) if (!c.dead && dist2(g.x,g.y,c.x,c.y-14) < 18*18) { c.dead=true; gibBurst(c.x,c.y-14,1); addKill(); }
+      for (const c of civs) if (!c.dead && dist2(g.x,g.y,c.x,c.y-14) < 18*18) { c.dead=true; gibBurst(c.x,c.y-14,1); addKill(true); }
       for (const gr of grunts) if (!gr.dead && dist2(g.x,g.y,gr.x,gr.y-16) < 18*18) { gr.dead=true; gibBurst(gr.x,gr.y-16,1); addKill(); }
     }
     const s = surfaceBelow(g.x, g.y - 20);
