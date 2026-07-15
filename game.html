@@ -2576,7 +2576,12 @@ function update(dt) {
   for (const cr of cranes) {
     if (cr.dead) {
       cr.respawnT -= dt;
-      if (cr.respawnT <= 0) { cr.dead = false; cr.toppling = false; cr.toppleAngle = 0; cr.hp = cr.maxHp; }
+      // same rule as building respawns — only pops back once it's safely off-screen, never in
+      // front of the player, so it doesn't read as fake. the fallen crane just sits there as
+      // wreckage until then even if the timer's already up.
+      if (cr.respawnT <= 0 && Math.abs(cr.x - (camX + VW/2)) > VW*2.2) {
+        cr.dead = false; cr.toppling = false; cr.toppleAngle = 0; cr.hp = cr.maxHp;
+      }
       continue;
     }
     if (!cr.toppling) continue;
