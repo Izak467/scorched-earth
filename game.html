@@ -648,35 +648,10 @@ const P = {
   dashT: 0, dashCd: 0, dashDir: {x:1,y:0},
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
   grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
-  underwaterT: 0, wasUnder: false, carried: false, slamStartY: 0, dashHitSet: new Set(),
+  underwaterT: 0, carried: false, slamStartY: 0, dashHitSet: new Set(),
   beamDash: false, clapCharging: false, clapChargeT: 0,
 };
 const inWater = (x, y) => x > WATER_X && y > GROUND_Y;
-// world-space street lamp positions (matches the visual spacing in drawCity) — used as light-ball spawn points
-const streetLamps = [];
-for (let lx = 35; lx < CITY_W; lx += 160) streetLamps.push(lx);
-// lamp fixtures along the elevated rail — gives Starlight something to pull light from up at rail
-// height instead of only ground lamps and whatever windows happen to be lit near that altitude
-const railLamps = [];
-for (let lx = 60; lx < CITY_W; lx += 260) railLamps.push(lx);
-function pickLightSource(nearX) {
-  const r = Math.random();
-  if (r < 0.4) {
-    const cands = streetLamps.filter(lx => Math.abs(lx-nearX) < 700);
-    if (cands.length) return { x: cands[randi(0,cands.length-1)], y: GROUND_Y-46 };
-  } else if (r < 0.55) {
-    const cands = railLamps.filter(lx => Math.abs(lx-nearX) < 700);
-    if (cands.length) return { x: cands[randi(0,cands.length-1)], y: RAIL_Y - 12 };
-  }
-  const cands = fgBuildings.filter(b => !b.collapsed && !b.collapsing && Math.abs(b.x-nearX) < 700 && b.wins.some(w=>w.warm));
-  if (cands.length) {
-    const b = cands[randi(0,cands.length-1)];
-    const warms = b.wins.filter(w=>w.warm);
-    const w = warms[randi(0,warms.length-1)];
-    return { x: b.x + 17 + w.c*CW*2, y: b.roofY + 23 + w.r*CH*2 };
-  }
-  return null;
-}
 function startDash(dir) {
   if (paused || P.stunT > 0 || introActive) return;
   // while a continuous down-slam is in progress, double-tapping up cancels it instead of
@@ -762,6 +737,7 @@ function thunderclap(chargeFrac) {
   for (const h of helis) if (!h.dead && dist2(h.x,h.y,P.x,P.y) < R*R) { h.hp -= 130*dmgMult; h.vx += (h.x-P.x)>0?300:-300; if (h.hp<=0) heliDeath(h); }
   for (const a of atrains) if (!a.dead && dist2(a.x,a.y-16,P.x,P.y) < R*R) {
     a.hp -= 90*dmgMult;
+    a.flash = 0.12; a.x = clamp(a.x + (a.x<P.x?-1:1)*90, 40, WORLD_W-40);
     if (a.hp<=0) atrainDeath(a);
   }
   for (const a of maeves) if (!a.dead && !maeveBraced(a) && dist2(a.x,a.y-16,P.x,P.y) < R*R) {
@@ -769,8 +745,7 @@ function thunderclap(chargeFrac) {
     if (a.hp<=0) maeveDeath(a);
   }
   for (const dp of deeps) if (!dp.dead && dist2(dp.x,dp.y-10,P.x,P.y) < R*R) {
-    dp.hp -= 90*dmgMult*deepDamageMult(dp);
-    if (dp.hp<=0) deepDeath(dp);
+    deepDamage(dp, 90*dmgMult*deepDamageMult(dp));
   }
   for (const l of lamplighters) if (!l.dead && dist2(l.x,l.y,P.x,P.y) < R*R) {
     l.hp -= 90*dmgMult; const d=Math.hypot(l.x-P.x,l.y-P.y)||1;
@@ -797,7 +772,7 @@ function thunderclap(chargeFrac) {
 // ─── Entities ───
 let grunts = [], civs = [], supes = [], helis = [], cars = [], bullets = [], rockets = [], fallers = [];
 let gibs = [], bloods = [], sparks = [], rings = [], afterimages = [], smokes = [], debris = [], embers = [];
-let electroBolts = [], lightBalls = [], jets = [], atrains = [], maeves = [];
+let electroBolts = [], jets = [], atrains = [], maeves = [];
 let mirrorBeam = null;   // Maeve's braced shield reflects an active second beam segment — set fresh each frame it's live
 let deeps = [], fishes = [];
 let trains = [], tanks = [], sharks = [];
@@ -971,7 +946,8 @@ function spawnBirdFlock() {
 }
 // A-Train: ground/rooftop speedster boss — never flies, runs along surfaces and wall-runs
 // between ground and rooftops. His charge attack only moves horizontally along his current
-// surface, so staying airborne above street level is the safe way to fight him from range.
+// surface — but a player who just sits above street level isn't safe either, since his wind-up
+// can resolve into a ballistic rubble throw instead of the charge (see the 'wind' state below).
 function spawnATrain() {
   const side = Math.random()<0.5 ? -1 : 1;
   const x = clamp(P.x + side*(VW*0.6+300), 100, WORLD_W-100);
@@ -979,7 +955,8 @@ function spawnATrain() {
     hp: 500, maxHp: 500, state: 'run', stateT: rand(0.4,1.2), roofCd: rand(1.5,3),
     facing: 1, dead: false, atkCd: rand(1.2,2), chargeVx: 0, blurT: 0, fleeCd: 0,
     laserHitT: 0, hitFlag: false, fleeing: false, stumbleCd: rand(1,2), lastRubbleIdx: -2,
-    climbTarget: null, climbX: 0, climbY0: 0, climbY1: 0, climbT: 0, climbDur: 0, windTarget: 'charge' });
+    climbTarget: null, climbX: 0, climbY0: 0, climbY1: 0, climbT: 0, climbDur: 0, windTarget: 'charge',
+    flash: 0 });
 }
 // support pylons hold the rail up every 600px, offset so world x ≡ 470 (mod 600) — matches
 // the pylon positions the elevated-rail renderer draws
@@ -1034,6 +1011,7 @@ function maeveBraced(a) { return a.state === 'brace' && a.braceTele <= 0; }
 function maeveDeath(a) {
   if (a.dead) return;
   a.dead = true;
+  if (P.carried) { P.carried = false; }   // don't leave Homelander glued to a corpse mid-grab
   addKill(); addDamage(2.4e6);
   gibBurst(a.x, a.y-16, 1.6, true);
   maeveTimer = rand(150, 200);   // cooldown starts at death, not spawn — significant downtime before she's back
@@ -1044,13 +1022,33 @@ function maeveDeath(a) {
 // and leaping-fish volleys.
 // two resistance tiers instead of one flat number: fully under the surface he's 8x tougher,
 // right at the surface (dolphin charge, breaching windups) he's 4x tougher, and fully exposed
-// (breaching clear of the water, or on the dock) it's full damage
+// (breaching clear of the water, or anywhere on the dock/city he's been dragged into) it's full damage
 const DEEP_UNDER_MULT = 1/8, DEEP_SURFACE_MULT = 1/4;
 function deepDamageMult(dp) {
   if (dp.x <= WATER_X) return 1;
   if (dp.y > GROUND_Y + 20) return DEEP_UNDER_MULT;
   if (dp.y > GROUND_Y - 20) return DEEP_SURFACE_MULT;
   return 1;
+}
+// dolphin-mount shield: while he's riding it (breach leap or dolphin-charge), it's supposed to
+// absorb damage in his place until shot/punched out from under him — routes every player weapon
+// through the same pool-selection + pop-transition + death check, so dash and thunderclap can't
+// bypass the mount and hit his real hp directly the way they used to
+function deepDamage(dp, amount) {
+  if (dp.dolphinHp > 0) {
+    dp.dolphinHp -= amount;
+    if (dp.dolphinHp <= 0) {
+      dp.dolphinHp = 0;
+      splash(dp.x, 500); shake(10); sfxCrack();
+      for (let i=0;i<7;i++) debris.push({ x: dp.x+rand(-14,14), y: dp.y+rand(-6,10), vx: rand(-140,140), vy: rand(-180,-20), rot: rand(0,7), vr: rand(-8,8), r: rand(2,5), c: '#7d8a94', life: rand(0.5,1) });
+      dp.hp -= 80;   // dumped hard when it goes out from under him
+      if (dp.state === 'jump') dp.state = 'fall';
+      else if (dp.state === 'dolphin') dp.state = 'lurk';
+    }
+  } else {
+    dp.hp -= amount;
+  }
+  if (dp.hp <= 0) deepDeath(dp);
 }
 function spawnDeep() {
   deeps.push({ x: clamp(P.x + rand(-500,500), WATER_X+400, WORLD_W-300), y: GROUND_Y+55,
@@ -1542,6 +1540,9 @@ function update(dt) {
     for (const a of atrains) if (!a.dead && !P.dashHitSet.has(a) && dist2(P.x,P.y,a.x,a.y-16) < 72*72) {
       P.dashHitSet.add(a);
       a.hp -= 260*DASH_DMG_MULT;
+      // every other boss flashes/gets shoved on a hit — he had neither; a small hit-shudder plus
+      // a real (if brief, given how fast he re-accelerates) shove matches the rest of the roster
+      a.flash = 0.12; a.x = clamp(a.x + P.dashDir.x*70, 40, WORLD_W-40);
       rings.push({x:a.x,y:a.y-16,r:10,life:0.4,w:3});
       if (a.hp<=0) atrainDeath(a);
     }
@@ -1564,9 +1565,8 @@ function update(dt) {
     }
     for (const dp of deeps) if (!dp.dead && !P.dashHitSet.has(dp) && dist2(P.x,P.y,dp.x,dp.y-10) < 72*72) {
       P.dashHitSet.add(dp);
-      dp.hp -= 260*DASH_DMG_MULT*deepDamageMult(dp);
+      deepDamage(dp, 260*DASH_DMG_MULT*deepDamageMult(dp));
       rings.push({x:dp.x,y:dp.y-10,r:10,life:0.4,w:3});
-      if (dp.hp<=0) deepDeath(dp);
     }
     for (const l of lamplighters) if (!l.dead && !P.dashHitSet.has(l) && dist2(P.x,P.y,l.x,l.y) < 72*72) {
       P.dashHitSet.add(l);
@@ -1961,8 +1961,16 @@ function update(dt) {
     } else if (hitATrain) {
       const a = hitATrain;
       a.hp -= 380*dt*LASER_DMG_MULT;
+      a.flash = 0.12;
       a.laserHitT += dt; a.hitFlag = true;
-      if (a.laserHitT > 1) a.fleeing = true;   // held on him too long — he bolts off-screen
+      if (a.laserHitT > 1 && !a.fleeing) {
+        // held on him too long — he bolts off-screen. this can catch him mid rail-climb; without
+        // resolving it here his y stays frozen at whatever height the climb had reached (the flee
+        // never runs the climb branch's own progression) and a.mode stays stale until the flee
+        // ends, causing a sudden snap once the normal surface-tracking code reacquires him
+        if (a.state === 'climb') { a.mode = a.climbTarget; a.buildingIdx = -1; a.state = 'run'; }
+        a.fleeing = true;
+      }
       if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
       if (a.hp <= 0) atrainDeath(a);
     } else if (hitMaeve) {
@@ -1988,6 +1996,14 @@ function update(dt) {
         for (const g of grunts) if (!g.dead && segDist(g.x, g.y-16, rex, rey, rEndX, rEndY) < 16) { g.dead = true; gibBurst(g.x, g.y-16, 1); addKill(); }
         for (const c of civs) if (!c.dead && segDist(c.x, c.y-14, rex, rey, rEndX, rEndY) < 14) { c.dead = true; gibBurst(c.x, c.y-14, 1); addKill(true); }
         for (const car of cars) if (!car.dead && segDist(car.x, car.y-10, rex, rey, rEndX, rEndY) < 20) carBoom(car);
+        // the reflection used to be able to cut buildings/fodder/cars but never the player who
+        // fired it — standing still and holding the beam on a braced Maeve was completely free.
+        // now the mirror can actually tag you back, same consequence shape as her other hits
+        if (segDist(P.x, P.y-20, rex, rey, rEndX, rEndY) < 22) {
+          const kd = Math.max(Math.hypot(P.x-a.x, P.y-a.y), 20);
+          P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(12); sfxHit(); thump(90,0.25,0.25);
+          P.vx += (P.x-a.x)/kd*500; P.vy += (P.y-a.y)/kd*500 - 60;
+        }
         mirrorBeam = { x1: rex, y1: rey, x2: rEndX, y2: rEndY };
         if (Math.random() < 0.7) {
           for (let i=0;i<3;i++) {
@@ -2007,9 +2023,12 @@ function update(dt) {
         a.hp -= 380*dt*LASER_DMG_MULT;
         if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
         // held the beam on her long enough — she throws the shield up in reaction instead of just
-        // standing there and taking it, rather than only ever bracing on her own fixed timer
+        // standing there and taking it, rather than only ever bracing on her own fixed timer.
+        // excluded the same way dodge already is: forcing a state change mid-jump/carry/railjump
+        // would yank her out of a committed animation into the brace snap-to-ground, a physics
+        // discontinuity rather than a reaction
         a.laserHitT += dt; a.hitFlag = true;
-        if (a.laserHitT > 0.6 && a.state !== 'brace') {
+        if (a.laserHitT > 0.6 && a.state !== 'brace' && a.state !== 'jump' && a.state !== 'carry' && a.state !== 'railjump') {
           a.state = 'brace'; a.stateT = 1.3; a.braceTele = 0.35; a.braceCd = rand(5.5, 7.5); a.laserHitT = 0;
         }
         if (a.hp <= 0) maeveDeath(a);
@@ -2019,22 +2038,12 @@ function update(dt) {
       if (dp.dolphinHp > 0) {
         // he's mounted (leaping breach or the dolphin-charge) — the dolphin is riding point-blank
         // in front of him, so it eats the beam instead of him until it's shot out from under him
-        dp.dolphinHp -= 450*dt*LASER_DMG_MULT;
         if (Math.random()<0.6) bubbleAt(dp.x+rand(-10,10), dp.y+rand(0,10));
-        if (dp.dolphinHp <= 0) {
-          dp.dolphinHp = 0;
-          splash(dp.x, 500); shake(10); sfxCrack();
-          for (let i=0;i<7;i++) debris.push({ x: dp.x+rand(-14,14), y: dp.y+rand(-6,10), vx: rand(-140,140), vy: rand(-180,-20), rot: rand(0,7), vr: rand(-8,8), r: rand(2,5), c: '#7d8a94', life: rand(0.5,1) });
-          dp.hp -= 80;   // dumped hard when it goes out from under him
-          if (dp.state === 'jump') dp.state = 'fall';
-          else if (dp.state === 'dolphin') dp.state = 'lurk';
-          if (dp.hp <= 0) deepDeath(dp);
-        }
+        deepDamage(dp, 450*dt*LASER_DMG_MULT);
       } else {
-        dp.hp -= 380*dt*LASER_DMG_MULT*deepDamageMult(dp);
         if (inWater(dp.x, dp.y)) { if (Math.random()<0.7) bubbleAt(dp.x+rand(-10,10), dp.y-rand(0,16)); }
         else if (Math.random()<0.5) sparks.push({x:beamEndX,y:beamEndY,vx:rand(-100,100),vy:rand(-140,20),life:rand(0.15,0.3),c:'#ffbb44'});
-        if (dp.hp <= 0) deepDeath(dp);
+        deepDamage(dp, 380*dt*LASER_DMG_MULT*deepDamageMult(dp));
       }
     } else if (hitLamp) {
       const l = hitLamp;
@@ -2305,7 +2314,6 @@ function update(dt) {
         s.dashVx = (dx/d)*1500; s.dashVy = (dy/d)*1500;
       }
       s.atkCd -= dt;
-      // light-ball/hail attack pulled for now, revisit later — bolts only in the meantime
       if (s.atkCd <= 0 && boltLockout <= 0) {
         const a = Math.atan2(P.y-s.y, P.x-s.x);
         electroBolts.push({ x: s.x, y: s.y, vx: Math.cos(a)*1088, vy: Math.sin(a)*1088, life: 2.9 });
@@ -2530,7 +2538,7 @@ function update(dt) {
   // ── A-Train (ground/rooftop speedster boss) ──
   for (const a of atrains) {
     if (a.dead) continue;
-    a.blurT += dt;
+    a.blurT += dt; a.flash -= dt;
     const d = Math.hypot(P.x-a.x, P.y-a.y) || 1;
 
     if (a.fleeing) {
@@ -2542,7 +2550,18 @@ function update(dt) {
     } else if (a.state === 'charge') {
       a.stateT -= dt;
       a.x += a.chargeVx*dt;
-      if (dist2(a.x,a.y,P.x,P.y) < 46*46) {
+      a.stumbleCd -= dt;
+      const rubbleIdx = a.mode === 'ground' && a.stumbleCd <= 0 ? findBuildingIndexAt(a.x) : -1;
+      if (rubbleIdx >= 0 && fgBuildings[rubbleIdx].collapsed && rubbleIdx !== a.lastRubbleIdx) {
+        // running at charge speed through rubble he leveled trips him too now — previously this
+        // only fired during his normal sprint, so barrelling straight through a building mid-charge
+        // was consequence-free even though it's the one state where he commits hardest to a line
+        a.state = 'stumble'; a.stateT = rand(0.45, 0.65); a.stumbleCd = rand(2.5, 4);
+        a.lastRubbleIdx = rubbleIdx;
+        for (let i=0;i<8;i++) debris.push({ x: a.x+rand(-16,16), y: GROUND_Y-4, vx: rand(-120,120),
+          vy: -rand(60,180), rot: rand(0,7), vr: rand(-6,6), r: rand(3,7), c: '#2e2638', life: rand(0.5,1) });
+        shake(6); sfxCrack();
+      } else if (dist2(a.x,a.y,P.x,P.y) < 46*46) {
         P.grounded = false; P.hopping = false;   // un-ground him so the knockback actually sends him flying
         P.vx += a.chargeVx>0?520:-520; P.vy -= 160;
         P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 1); shake(16); thump(70,0.25,0.3); sfxHit();
@@ -2720,6 +2739,15 @@ function update(dt) {
     if (firing && P.x > WATER_X + 260 + 300 && !a.fleeing) { a.fleeing = true; a.fleeT = 3; }
     if (a.fleeing) {
       a.x -= 2200*dt; a.facing = -1; a.fleeT -= dt;
+      // a brace in progress when the flee kicks in used to just freeze mid-shield — the state
+      // dispatch below never runs while fleeing, so her brace timer never counted down and
+      // maeveBraced() stayed true for the whole retreat, an unintended invincibility window.
+      // Keep it ticking here too so it always resolves on schedule.
+      if (a.state === 'brace') {
+        a.stateT -= dt;
+        if (a.braceTele > 0) a.braceTele -= dt;
+        if (a.stateT <= 0) a.state = 'run';
+      }
       // same fix as Deep's mirrored retreat below: this triggers from the player being far out in
       // the water already, so an off-screen distance check was true instantly and cancelled the
       // flee before she moved
@@ -2743,20 +2771,36 @@ function update(dt) {
       a.x += a.jumpVx*dt; a.y += a.jumpVy*dt;
       a.facing = a.jumpVx >= 0 ? 1 : -1;
       if (dist2(a.x,a.y,P.x,P.y) < 80*80) {
-        // connects — sends Homelander flying back harder than a regular supe hit, no stun. floored,
-        // not just zero-guarded — see the note on Maeve's brace-bounce
-        const kd = Math.max(Math.hypot(P.x-a.x, P.y-a.y), 20);
-        P.grounded = false; P.hopping = false;   // un-ground him so the knockback actually sends him flying
-        P.knockT = 0.5;                          // exempt from the normal max-speed clamp for a moment
-        P.vx += (P.x-a.x)/kd * 3900; P.vy += (P.y-a.y)/kd * 3900;
-        P.hurtFlash = 1; shake(20); sfxHit(); thump(65,0.3,0.35);
-        a.state = 'skid'; a.stateT = rand(0.6,0.9);
+        // connects — a real grab: hauls Homelander down to street level and stuns him, rather
+        // than just knocking him back. See the 'carry' state below.
+        a.state = 'carry'; a.stateT = 0.55;
+        P.carried = true; P.grounded = false; P.hopping = false; P.dashT = 0;
+        P.hurtFlash = 1; shake(18); sfxHit(); thump(65,0.3,0.35);
       } else if (a.stateT <= 0) {
         a.state = 'skid'; a.stateT = rand(0.4,0.7);
       }
       a.x = clamp(a.x, 40, WATER_X + 260);   // can't swim, but she'll wade into the shallows to stay a threat
       a.y = clamp(a.y, 80, GROUND_Y-20);
       continue;   // under her own lunge velocity — skip the surface-tracking pull below
+    }
+
+    if (a.state === 'carry') {
+      // hauling Homelander down to street level — she and the player move together, same shape
+      // as Deep's underwater carry state
+      a.stateT -= dt;
+      a.y += clamp((GROUND_Y - 20) - a.y, -1600*dt, 1600*dt);
+      a.x = clamp(a.x, 40, WATER_X + 260);
+      P.x = a.x; P.y = a.y - 30; P.vx = 0; P.vy = 0; P.grounded = false; P.hopping = false;
+      P.stunT = Math.max(P.stunT, 0.3);
+      if (a.stateT <= 0 || a.y >= GROUND_Y - 22) {
+        P.carried = false;
+        P.stunT = Math.max(P.stunT, 1.1);   // the "stuns you briefly" the header comment always promised
+        P.knockT = 0.4;
+        P.vx = (a.facing<0?1:-1)*260; P.vy = -120;
+        shake(10); sfxCrack();
+        a.state = 'skid'; a.stateT = rand(0.6,0.9);
+      }
+      continue;
     }
 
     if (a.state === 'dodge') {
@@ -2839,7 +2883,8 @@ function update(dt) {
       }
       // evasive dodge: a real threat read (laser actually aimed near her, same beam-proximity
       // projection A-Train's evasion uses, or a dash closing in), checked after brace so the two
-      // reactions never both try to trigger off the same frame — dodge wins if both would fire
+      // reactions never both try to trigger off the same frame — brace wins if both would fire,
+      // since it's gated on a.state === 'run' and brace above may have just changed it
       a.dodgeCd -= dt;
       if (a.dodgeCd <= 0 && a.state === 'run') {
         let laserThreat2 = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 340*340);
@@ -2917,7 +2962,12 @@ function update(dt) {
 
     // sniped from deep in the city, well past even the dock he can chase you across — he can't
     // ever close that gap, so he retreats into open water rather than sitting there taking it
-    if (firing && P.x < CITY_W - 250 && !dp.fleeing) { dp.fleeing = true; dp.fleeT = 3; }
+    if (firing && P.x < CITY_W - 250 && !dp.fleeing) {
+      // this can hijack him mid-jump/mid-dolphin-charge, both states where dolphinHp is live —
+      // without clearing it here, fleeing back to 'lurk' left an invisible, un-rendered shield
+      // pool still soaking up the next laser hit for no visible reason
+      dp.fleeing = true; dp.fleeT = 3; dp.dolphinHp = 0; dp.airFishCd = 0;
+    }
     if (dp.fleeing) {
       dp.x += 1900*dt; dp.facing = 1; dp.fleeT -= dt;
       // this triggers from a snipe deep in the city, so the gap to the player is already huge from
@@ -2974,6 +3024,11 @@ function update(dt) {
       }
     } else if (dp.state === 'crouch') {
       dp.stateT -= dt;
+      // rises toward the surface during the windup, same as the dolphin-charge's own windup below —
+      // without this he stayed at his toughest (fully-submerged) tier through the one moment the
+      // game is telling you to punish him, instead of the "breaching windups" surface tier the
+      // damage-tier comment above promises
+      dp.y += ((GROUND_Y - 4) - dp.y) * Math.min(1, dt*8);
       if (Math.random() < dt*30) bubbleAt(dp.x + rand(-20,20), GROUND_Y + rand(6,30));
       if (dp.stateT <= 0) {
         // breach lunge — same led-target pounce as Maeve's, launched out of the water
@@ -3182,9 +3237,14 @@ function update(dt) {
     if (Math.random() < dt*18) smokes.push({ x: l.x+rand(-8,8), y: l.y+rand(-8,8), r: rand(4,8), vr: rand(10,18), vy: rand(-30,-10), life: rand(0.3,0.55), c: 'rgba(120,60,20,' });
     if (Math.random() < dt*30) embers.push({ x: l.x+rand(-8,8), y: l.y+rand(-8,8), vx: rand(-15,15), vy: rand(-40,-10), life: rand(0.25,0.45), r: rand(1,2.2) });
     l.dashCd -= dt;
-    if (l.dashCd <= 0 && d < 340) { l.dashing = true; l.dashT = 0.35; l.dashVx = (dx/d)*1500; l.dashVy = (dy/d)*1500; }
     l.breatheCd -= dt;
-    if (l.breatheCd <= 0 && d < 320) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
+    // mutually exclusive now — these used to be two independent ifs sharing the same frame's d, so
+    // if both cooldowns and both range checks lined up on the same frame, dash would get set true
+    // and then immediately shadowed by breathing (checked first next frame, since it's earlier in
+    // the dispatch chain above), leaving the dash stashed until breathing ended and then firing
+    // late from a stale position instead of either resolving cleanly
+    if (l.dashCd <= 0 && d < 340) { l.dashing = true; l.dashT = 0.35; l.dashVx = (dx/d)*1500; l.dashVy = (dy/d)*1500; }
+    else if (l.breatheCd <= 0 && d < 320) { l.breathing = true; l.breatheT = rand(1,1.5); l.breatheHitCd = 0; l.breatheCd = rand(4,6); }
     l.atkCd -= dt;
     if (l.atkCd <= 0 && fireballLockout <= 0) {
       const a = Math.atan2(dy,dx);
@@ -3386,7 +3446,7 @@ function update(dt) {
     eb.x += eb.vx*dt; eb.y += eb.vy*dt; eb.life -= dt;
     if (inWater(eb.x, eb.y) && Math.random() < dt*40) bubbleAt(eb.x, eb.y);   // a visible trail underwater — the bolt used to just seem to vanish at the surface
     if (dist2(eb.x,eb.y,P.x,P.y) < 32*32) {
-      eb.life = 0; P.stunT = 1.5; boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
+      eb.life = 0; P.stunT = Math.max(P.stunT, 1.5); boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
       for (let i=0;i<10;i++) sparks.push({x:eb.x,y:eb.y,vx:rand(-160,160),vy:rand(-160,160),life:rand(0.2,0.4),c:'#fff35a'});
     // GROUND_Y is also the water surface — a bolt crossing it out in the water zone should keep
     // going (so she can still tag you underwater) instead of fizzling the instant it touches water
@@ -3406,29 +3466,6 @@ function update(dt) {
     } else if (cellIntactAt(fb.x, fb.y) || (fb.y > GROUND_Y && (fb.x <= WATER_X || fb.y > WATER_FLOOR))) fb.life = 0;
   }
   fireballs = fireballs.filter(fb => fb.life > 0);
-
-  // ── Starlight's light balls (spawned from windows/lamps, weak homing) ──
-  for (const lb of lightBalls) {
-    const ldx = P.x-lb.x, ldy = P.y-lb.y, ld = Math.hypot(ldx,ldy)||1;
-    lb.vx += (ldx/ld)*(lb.hail?150:110)*dt; lb.vy += (ldy/ld)*(lb.hail?150:110)*dt;
-    const lsp = Math.hypot(lb.vx,lb.vy), lmx = lb.hail ? 620 : 480;
-    if (lsp > lmx) { lb.vx *= lmx/lsp; lb.vy *= lmx/lsp; }
-    lb.x += lb.vx*dt; lb.y += lb.vy*dt; lb.life -= dt;
-    if (dist2(lb.x,lb.y,P.x,P.y) < 18*18) {
-      lb.life = 0; P.hurtFlash = 1; sfxHit();
-      const kd = Math.max(Math.hypot(P.x-lb.x,P.y-lb.y), 20);
-      if (lb.hail) {
-        // hits harder than the ambient potshot, and stings enough to briefly stun — but it's a
-        // fraction of a second, not the full lockout her electric bolt gives
-        P.vx += (P.x-lb.x)/kd*520; P.vy += (P.y-lb.y)/kd*520;
-        P.stunT = Math.max(P.stunT, 0.3); shake(13); thump(90,0.25,0.25);
-      } else {
-        P.vx += (P.x-lb.x)/kd*260; P.vy += (P.y-lb.y)/kd*260;
-        shake(8);
-      }
-    } else if (cellIntactAt(lb.x, lb.y) || (lb.y > GROUND_Y && (lb.x <= WATER_X || lb.y > WATER_FLOOR))) lb.life = 0;
-  }
-  lightBalls = lightBalls.filter(lb => lb.life > 0);
 
   // ── gibs / debris (heavy chunks crush pedestrians) ──
   for (const g of gibs) {
@@ -3969,6 +4006,7 @@ function drawATrain(a) {
   cx.save(); cx.translate(x, y);
   if (a.state === 'stumble') cx.rotate(Math.sin(gameT*24)*0.25*clamp(a.stateT/0.3,0,1));
   else if (a.state === 'climb') cx.rotate(Math.sin(gameT*10)*0.07);   // small hand-over-hand wobble up the pole
+  if (a.flash > 0) { cx.globalAlpha = 0.85; cx.translate(rand(-1.8,1.8), rand(-1.8,1.8)); }   // same hit-shudder every other boss gets — he had none before
   cx.scale(a.facing*BOSS_SCALE, BOSS_SCALE);
   if (a.state === 'run' || charging) {
     // jagged electric crackle instead of plain straight speed lines
@@ -4845,14 +4883,6 @@ function drawFx() {
     cx.fillStyle = 'rgba(255,120,30,0.6)';
     cx.beginPath(); cx.moveTo(-8,0); cx.lineTo(-24,-6); cx.lineTo(-16,0); cx.lineTo(-24,6); cx.closePath(); cx.fill();
     cx.restore();
-  }
-  for (const lb of lightBalls) {
-    const x = lb.x - camX, y = lb.y - camY;
-    const r = lb.hail ? 14 : 10;
-    const g = cx.createRadialGradient(x,y,1, x,y,r);
-    if (lb.hail) { g.addColorStop(0,'rgba(255,255,255,0.98)'); g.addColorStop(0.5,'rgba(255,240,160,0.7)'); g.addColorStop(1,'rgba(255,220,120,0)'); }
-    else { g.addColorStop(0,'rgba(255,250,220,0.95)'); g.addColorStop(1,'rgba(255,230,140,0)'); }
-    cx.fillStyle = g; cx.beginPath(); cx.arc(x,y,r,0,7); cx.fill();
   }
   // rockets: unmistakably hostile — red glowing warhead, flame, thick trail
   for (const r of rockets) {
