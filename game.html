@@ -649,8 +649,17 @@ const P = {
   hurtFlash: 0, bank: 0, boost: 0, clapCd: 0, stunT: 0,
   grounded: false, hopping: false, dashCoastT: 0, knockT: 0, vertDash: null, bigLaunch: false,
   underwaterT: 0, carried: false, slamStartY: 0, dashHitSet: new Set(),
-  beamDash: false, clapCharging: false, clapChargeT: 0,
+  beamDash: false, clapCharging: false, clapChargeT: 0, stunImmuneT: 0,
 };
+// every boss attack that locks the player's movement funnels through here instead of touching
+// P.stunT directly — once a stun naturally expires it arms a brief grace window (see the P.stunT
+// decrement in update()) during which a *different* boss's stun can't immediately chain onto it.
+// Without this, two overlapping bosses (now that spawns aren't kill-gated and can coexist) could
+// land back-to-back hard stuns with the player never getting a frame of actual control back.
+function applyStun(dur) {
+  if (P.stunImmuneT > 0) return;
+  P.stunT = Math.max(P.stunT, dur);
+}
 const inWater = (x, y) => x > WATER_X && y > GROUND_Y;
 function startDash(dir) {
   if (paused || P.stunT > 0 || introActive) return;
@@ -900,7 +909,7 @@ function spawnStarlight() {
   supes.push({ x: clamp(P.x + side*(VW*0.7+300), 150, WORLD_W-150), y: rand(300, 900),
     vx: 0, vy: 0, hp: 1400, maxHp: 1400, state: 'seek', t: 0, suit: '#f2eddc', accent: '#ffe14d',
     smokeT: 0, flash: 0, boss: true, orbitDir, atkCd: rand(0.6,1.0),
-    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0, knockT: 0 });
+    dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.8,2.8), launchedT: 0, knockT: 0, knockImmuneT: 0 });
 }
 function spawnHeli(newsCrew) {
   const side = Math.random()<0.5 ? -1 : 1;
@@ -1083,7 +1092,7 @@ function spawnLamplighter() {
     vx: 0, vy: 0, hp: 1250, maxHp: 1250, dead: false, orbitDir,
     dashing: false, dashT: 0, dashVx: 0, dashVy: 0, dashCd: rand(1.6,2.4),
     breathing: false, breatheT: 0, breatheCd: rand(3.5,5), breatheHitCd: 0, atkCd: rand(0.5,0.8),
-    smokeT: 0, flash: 0, launchedT: 0, facing: 1, knockT: 0 });
+    smokeT: 0, flash: 0, launchedT: 0, facing: 1, knockT: 0, knockImmuneT: 0 });
 }
 function lamplighterDeath(l) {
   if (l.dead) return;
@@ -1474,7 +1483,10 @@ function update(dt) {
       }
     }
   }
+  const wasStunned = P.stunT > 0;
   P.stunT = Math.max(0, P.stunT - dt);
+  if (wasStunned && P.stunT <= 0) P.stunImmuneT = 0.6;   // grace window against a chain-stun starts the instant this one actually ends
+  if (P.stunImmuneT > 0) P.stunImmuneT -= dt;
   boltLockout = Math.max(0, boltLockout - dt);
   fireballLockout = Math.max(0, fireballLockout - dt);
   P.hurtFlash = Math.max(0, P.hurtFlash - dt*3);
@@ -1529,7 +1541,12 @@ function update(dt) {
       // a real haymaker — hard enough to send a boss clean through a building if one's in the
       // way (see the crash-through carving in the boss movement update below)
       s.vx += P.dashDir.x*BOSS_KB; s.vy += P.dashDir.y*BOSS_KB;
-      if (s.boss) s.knockT = 0.45;
+      // knockImmuneT stops repeated dashes from chain-locking a boss in the knockback-flight
+      // state forever (dash cooldown is 0.55s, shorter than the old unconditional 0.45s lock —
+      // a player who just re-dashed the instant it was up could keep them permanently unable to
+      // act). Once a knockback resolves, they get a guaranteed window where hits still land but
+      // can't re-trigger the lock, so they always get a chance to fight back.
+      if (s.boss && s.knockImmuneT <= 0) { s.knockT = 0.45; s.knockImmuneT = 0.95; }
       if (P.dashDir.y < -0.3) s.launchedT = 0.9;
       rings.push({x:s.x,y:s.y,r:10,life:0.4,w:3});
       if (s.hp<=0) { gibBurst(s.x,s.y,1.6,true,P.dashDir.x*350,P.dashDir.y*350); addKill(); if (s.boss) { starlightTimer = rand(140, 190); announceBossKill('STARLIGHT', s.x, s.y); } }
@@ -1571,9 +1588,10 @@ function update(dt) {
     for (const l of lamplighters) if (!l.dead && !P.dashHitSet.has(l) && dist2(P.x,P.y,l.x,l.y) < 72*72) {
       P.dashHitSet.add(l);
       l.hp -= 380*DASH_DMG_MULT*(isJuggled(l) ? JUGGLE_DMG_MULT : 1)*streakMult();
-      // same haymaker as Starlight above — see the matching comment there
+      // same haymaker as Starlight above — see the matching comment there, including the
+      // knockImmuneT chain-lock guard
       l.vx += P.dashDir.x*BOSS_KB; l.vy += P.dashDir.y*BOSS_KB;
-      l.knockT = 0.45;
+      if (l.knockImmuneT <= 0) { l.knockT = 0.45; l.knockImmuneT = 0.95; }
       if (P.dashDir.y < -0.3) l.launchedT = 0.9;
       rings.push({x:l.x,y:l.y,r:10,life:0.4,w:3});
       if (l.hp<=0) lamplighterDeath(l);
@@ -2001,7 +2019,7 @@ function update(dt) {
         // now the mirror can actually tag you back, same consequence shape as her other hits
         if (segDist(P.x, P.y-20, rex, rey, rEndX, rEndY) < 22) {
           const kd = Math.max(Math.hypot(P.x-a.x, P.y-a.y), 20);
-          P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(12); sfxHit(); thump(90,0.25,0.25);
+          P.hurtFlash = 1; applyStun(0.4); shake(12); sfxHit(); thump(90,0.25,0.25);
           P.vx += (P.x-a.x)/kd*500; P.vy += (P.y-a.y)/kd*500 - 60;
         }
         mirrorBeam = { x1: rex, y1: rey, x2: rEndX, y2: rEndY };
@@ -2249,6 +2267,7 @@ function update(dt) {
     if (s.hp <= 0) continue;
     s.t -= dt; s.smokeT -= dt; s.flash -= dt;
     if (s.launchedT > 0) s.launchedT -= dt;
+    if (s.knockImmuneT > 0) s.knockImmuneT -= dt;
     if (s.smokeT > 0 && Math.random()<0.5)
       sparks.push({x:s.x+rand(-10,10), y:s.y+rand(-14,14), vx:rand(-30,30), vy:rand(-80,-20), life:rand(0.3,0.7), c:'#555560'});
     const dx = P.x - s.x, dy = P.y - s.y, d = Math.hypot(dx,dy) || 1;
@@ -2564,7 +2583,7 @@ function update(dt) {
       } else if (dist2(a.x,a.y,P.x,P.y) < 46*46) {
         P.grounded = false; P.hopping = false;   // un-ground him so the knockback actually sends him flying
         P.vx += a.chargeVx>0?520:-520; P.vy -= 160;
-        P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 1); shake(16); thump(70,0.25,0.3); sfxHit();
+        P.hurtFlash = 1; applyStun(1); shake(16); thump(70,0.25,0.3); sfxHit();
         a.state = 'skid'; a.stateT = rand(0.5,0.8);
       } else if (a.stateT <= 0 || a.x < 40 || a.x > WORLD_W-40) {
         a.state = 'skid'; a.stateT = rand(0.5,0.8);
@@ -2630,8 +2649,13 @@ function update(dt) {
       }
       const threatened = (P.dashT > 0 && dist2(P.x,P.y,a.x,a.y) < 320*320) || laserThreat;
       if (threatened && a.fleeCd <= 0) {
+        // an aggressive player is dashing near him constantly as a matter of course, and fleeCd
+        // at 1.1s meant that alone was enough to keep re-triggering this every second or so —
+        // he'd spend the whole fight darting away instead of ever actually being fought. A much
+        // longer cooldown (and a shorter commit once he does dodge) keeps the reactive dodge for
+        // a genuine close call without letting it eat the entire engagement.
         a.wanderX = clamp(a.x + (a.x < P.x ? -1 : 1) * rand(800,1500), 60, WORLD_W-60);
-        a.stateT = rand(0.9,1.5); a.fleeCd = 1.1;
+        a.stateT = rand(0.5,0.9); a.fleeCd = rand(3, 4.5);
       } else if (a.stateT <= 0) {
         // long, fast sweeps that carry him well past the edges of the screen and back — both the
         // distance and how long he commits to one sprint before re-picking a target are up a bit,
@@ -2791,10 +2815,10 @@ function update(dt) {
       a.y += clamp((GROUND_Y - 20) - a.y, -1600*dt, 1600*dt);
       a.x = clamp(a.x, 40, WATER_X + 260);
       P.x = a.x; P.y = a.y - 30; P.vx = 0; P.vy = 0; P.grounded = false; P.hopping = false;
-      P.stunT = Math.max(P.stunT, 0.3);
+      applyStun(0.3);
       if (a.stateT <= 0 || a.y >= GROUND_Y - 22) {
         P.carried = false;
-        P.stunT = Math.max(P.stunT, 1.1);   // the "stuns you briefly" the header comment always promised
+        applyStun(1.1);   // the "stuns you briefly" the header comment always promised
         P.knockT = 0.4;
         P.vx = (a.facing<0?1:-1)*260; P.vy = -120;
         shake(10); sfxCrack();
@@ -3083,11 +3107,11 @@ function update(dt) {
       // hauls Homelander out of the water diagonally up-left, then hurls him
       dp.x -= 1050*dt; dp.y -= 1400*dt;
       P.x = dp.x + 14; P.y = dp.y - 6; P.vx = -1050; P.vy = -1400;
-      P.stunT = Math.max(P.stunT, 0.2); P.dashT = 0; P.grounded = false;
+      applyStun(0.2); P.dashT = 0; P.grounded = false;
       dp.facing = -1;
       if (dp.y < GROUND_Y && dp.y > GROUND_Y - 60) splash(dp.x, 700);
       if (dp.y <= GROUND_Y - 430) {
-        P.carried = false; P.knockT = 0.6; P.stunT = 0.35;
+        P.carried = false; P.knockT = 0.6; applyStun(0.35);
         P.vx = -2400; P.vy = -450;
         P.hurtFlash = 1; shake(20); sfxHit(); thump(60,0.35,0.35);
         dp.state = 'fall'; dp.jumpVx = 300; dp.jumpVy = 200;
@@ -3140,6 +3164,7 @@ function update(dt) {
     if (l.dead) continue;
     l.smokeT -= dt; l.flash -= dt;
     if (l.launchedT > 0) l.launchedT -= dt;
+    if (l.knockImmuneT > 0) l.knockImmuneT -= dt;
     const dx = P.x-l.x, dy = P.y-l.y, d = Math.hypot(dx,dy) || 1;
 
     if (l.knockT > 0) {
@@ -3180,7 +3205,7 @@ function update(dt) {
       }
       if (d < range && l.breatheHitCd <= 0 && Math.abs(angDiff(Math.atan2(dy,dx),ang)) < halfAngle) {
         l.breatheHitCd = 0.35;
-        P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(8); sfxHit();
+        P.hurtFlash = 1; applyStun(0.4); shake(8); sfxHit();
         P.vx += (P.x-l.x)/d*500; P.vy += (P.y-l.y)/d*500 - 60;
       }
       if (l.breatheT <= 0 || d > 380) { l.breathing = false; l.breatheCd = rand(4,6); }
@@ -3416,7 +3441,7 @@ function update(dt) {
     let boom = false;
     if (dist2(rb.x,rb.y,P.x,P.y) < 34*34) {
       boom = true;
-      P.hurtFlash = 1; P.stunT = Math.max(P.stunT, 0.4); shake(10); sfxHit(); thump(70,0.2,0.25);
+      P.hurtFlash = 1; applyStun(0.4); shake(10); sfxHit(); thump(70,0.2,0.25);
       const kd = Math.max(Math.hypot(P.x-rb.x,P.y-rb.y), 20);
       P.vx += (P.x-rb.x)/kd*700; P.vy += (P.y-rb.y)/kd*700 - 120;
     }
@@ -3446,7 +3471,7 @@ function update(dt) {
     eb.x += eb.vx*dt; eb.y += eb.vy*dt; eb.life -= dt;
     if (inWater(eb.x, eb.y) && Math.random() < dt*40) bubbleAt(eb.x, eb.y);   // a visible trail underwater — the bolt used to just seem to vanish at the surface
     if (dist2(eb.x,eb.y,P.x,P.y) < 32*32) {
-      eb.life = 0; P.stunT = Math.max(P.stunT, 1.5); boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
+      eb.life = 0; applyStun(1.5); boltLockout = 2; P.hurtFlash = 1; shake(14); sfxHit(); thump(200, 0.3, 0.25);
       for (let i=0;i<10;i++) sparks.push({x:eb.x,y:eb.y,vx:rand(-160,160),vy:rand(-160,160),life:rand(0.2,0.4),c:'#fff35a'});
     // GROUND_Y is also the water surface — a bolt crossing it out in the water zone should keep
     // going (so she can still tag you underwater) instead of fizzling the instant it touches water
@@ -3459,7 +3484,7 @@ function update(dt) {
     fb.x += fb.vx*dt; fb.y += fb.vy*dt; fb.life -= dt;
     if (Math.random() < dt*40) embers.push({ x: fb.x, y: fb.y, vx: rand(-15,15), vy: rand(-15,15), life: rand(0.15,0.3), r: rand(1,2) });
     if (dist2(fb.x,fb.y,P.x,P.y) < 30*30) {
-      fb.life = 0; P.stunT = Math.max(P.stunT, 0.5); fireballLockout = 1.2; P.hurtFlash = 1; shake(10); sfxHit(); thump(160, 0.25, 0.22);
+      fb.life = 0; applyStun(0.5); fireballLockout = 1.2; P.hurtFlash = 1; shake(10); sfxHit(); thump(160, 0.25, 0.22);
       const kd = Math.max(Math.hypot(P.x-fb.x,P.y-fb.y), 20);
       P.vx += (P.x-fb.x)/kd*400; P.vy += (P.y-fb.y)/kd*400;
       for (let i=0;i<8;i++) sparks.push({x:fb.x,y:fb.y,vx:rand(-140,140),vy:rand(-140,140),life:rand(0.2,0.4),c:'#ff8a3a'});
