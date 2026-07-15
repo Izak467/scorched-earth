@@ -44,6 +44,35 @@
     -webkit-background-clip:text; background-clip:text; color:transparent;
   }
   #mobileBlock p { max-width:360px; font-size:15px; line-height:1.6; color:rgba(242,237,226,.9); margin:0; }
+  #pauseMenu {
+    display:none; position:fixed; inset:0; z-index:30;
+    background:rgba(8,7,14,.72); backdrop-filter:blur(2px);
+    color:#f2ede2; font-family:Georgia,'Times New Roman',serif;
+    flex-direction:column; align-items:center; justify-content:center;
+  }
+  #pauseMenu .pm-box {
+    background:rgba(20,17,28,.92); border:1px solid rgba(242,237,226,.15);
+    border-radius:12px; padding:28px 34px; min-width:300px; max-width:88vw;
+    box-shadow:0 12px 40px rgba(0,0,0,.5);
+  }
+  #pauseMenu .pm-title {
+    font-size:28px; font-weight:bold; letter-spacing:3px; text-align:center; margin-bottom:18px;
+    text-shadow:0 2px 8px rgba(0,0,0,.7);
+  }
+  #pauseMenu .pm-controls {
+    font-size:13px; line-height:1.85; color:rgba(242,237,226,.82); margin-bottom:20px;
+  }
+  #pauseMenu .pm-controls b { color:#ffd98a; font-weight:normal; display:inline-block; min-width:150px; }
+  #pauseMenu .pm-row { display:flex; align-items:center; gap:10px; margin-bottom:16px; font-size:13px; }
+  #pauseMenu .pm-row input[type=range] { flex:1; accent-color:#e8c04a; }
+  #pauseMenu .pm-btns { display:flex; gap:10px; margin-top:6px; }
+  #pauseMenu button {
+    flex:1; background:rgba(232,192,74,.14); border:1px solid rgba(232,192,74,.4); color:#f2ede2;
+    font-family:Georgia,serif; font-size:14px; padding:9px 14px; border-radius:8px; cursor:pointer;
+  }
+  #pauseMenu button:hover { background:rgba(232,192,74,.28); }
+  #pauseMenu button.pm-danger { border-color:rgba(200,80,60,.5); background:rgba(160,50,40,.18); }
+  #pauseMenu button.pm-danger:hover { background:rgba(160,50,40,.32); }
 </style>
 </head>
 <body>
@@ -56,6 +85,29 @@
 <div id="hud"><div id="kills">0 KILLS</div><div id="dmg">$0 DAMAGE</div><div id="streak"></div></div>
 <div id="hint">WASD/ARROWS fly (speed builds) · MOUSE aim · HOLD CLICK laser · DOUBLE-TAP dir DASH (hold a 2nd dir = diagonal) · dash DOWN into street = SLAM · SPACE thunderclap · M mute · P pause</div>
 <canvas id="cv"></canvas>
+<div id="pauseMenu">
+  <div class="pm-box">
+    <div class="pm-title">PAUSED</div>
+    <div class="pm-controls">
+      <div><b>WASD / Arrows</b>fly (double-tap = dash)</div>
+      <div><b>Mouse</b>aim</div>
+      <div><b>Hold Click</b>laser (hold + dash = piercing dash)</div>
+      <div><b>Dash down into street</b>slam</div>
+      <div><b>Space tap / hold</b>thunderclap / charged slam</div>
+      <div><b>M</b>mute</div>
+      <div><b>P / Esc</b>pause</div>
+    </div>
+    <div class="pm-row">
+      <label for="volSlider">Volume</label>
+      <input type="range" id="volSlider" min="0" max="100" value="40">
+    </div>
+    <div class="pm-btns">
+      <button id="resumeBtn">Resume</button>
+      <button id="muteBtn">Mute</button>
+      <button id="restartBtn" class="pm-danger">Restart</button>
+    </div>
+  </div>
+</div>
 <script>
 'use strict';
 // ═══════════════════ SCORCHED EARTH v3 ═══════════════════
@@ -236,7 +288,7 @@ function applyTowerFields(b) {
     h, rows, roofY: GROUND_Y - h, cells, wins, shade: 0, archetype: 'tower', roofStyle: null, roofChunks: [],
     ant: false, ac: -1, watertower: false, burning: false,
     destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supActive: false, supT: 0,
-    isTower: true, glassIntact: true, glassHitT: 0, collapsedAtT: undefined
+    isTower: true, glassIntact: true, glassHitT: 0, collapsedAtT: undefined, topDestroyed: 0
   });
 }
 (function plantVoughtTower(){
@@ -480,6 +532,15 @@ const DIRKEYS = {
 };
 const lastTap = {};
 let mouseSX = VW/2, mouseSY = VH/2, firing = false, paused = false, freezeT = 0;
+function setPaused(v) {
+  paused = v;
+  const m = document.getElementById('pauseMenu');
+  if (m) m.style.display = v ? 'flex' : 'none';
+  if (v) firing = false;   // don't leave the laser latched on while a menu click grabs focus
+  // resuming via the button leaves it focused — without this, the next Space press activates
+  // the button again instead of reaching the game's own keydown handler
+  else if (document.activeElement) document.activeElement.blur();
+}
 let introActive = true, introT = 0, introShattered = false;   // cold-open: bursting up through Vought Tower's glass
 
 window.addEventListener('keydown', e => {
@@ -504,8 +565,8 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Space' && !P.clapCharging && P.clapCd <= 0 && !paused && P.stunT <= 0 && !introActive) {
     P.clapCharging = true; P.clapChargeT = 0;
   }
-  if (e.code === 'KeyM') muted = !muted;
-  if (e.code === 'KeyP' || e.code === 'Escape') paused = !paused;
+  if (e.code === 'KeyM') setMuted(!muted);
+  if (e.code === 'KeyP' || e.code === 'Escape') setPaused(!paused);
 });
 window.addEventListener('keyup', e => {
   keys[e.code] = false;
@@ -524,12 +585,13 @@ window.addEventListener('blur', () => { firing=false; for (const k in keys) keys
 window.addEventListener('contextmenu', e => e.preventDefault());
 
 // ─── Audio ───
-let AC = null, muted = false, master = null, laserGain = null;
+let AC = null, muted = false, master = null, laserGain = null, volume = 0.4;
+function setMuted(v) { muted = v; const b = document.getElementById('muteBtn'); if (b) b.textContent = muted ? 'Unmute' : 'Mute'; }
 function audioBoot() {
   if (AC) return;
   try {
     AC = new (window.AudioContext||window.webkitAudioContext)();
-    master = AC.createGain(); master.gain.value = 0.4;
+    master = AC.createGain(); master.gain.value = volume;
     // limiter on the bus — the dock especially can fire several booms/thumps in the same frame
     // (containers, sharks, tanks all going off near each other), and without this they just sum
     // and clip at the destination, which reads as crackle/pop rather than "loud"
@@ -746,7 +808,9 @@ let birds = [], birdTimer = rand(3, 7);   // pure ambient scenery — no hp, no 
 // so the value here is really "how long after the gate opens" — widened across all of them, and
 // the gates themselves spaced further apart in kills, so the whole cast doesn't debut in a pile
 // in the first few minutes the way it used to
-let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(60,90), jetTimer = rand(10,18), atrainTimer = rand(40,65), maeveTimer = rand(70,100), deepTimer = rand(40,70), lamplighterTimer = rand(55,80), newsTimer = rand(20, 35);
+// villain debut times: staggered on a fixed clock instead of a kill milestone, so the cast enters
+// one at a time spaced a couple minutes apart no matter how fast (or slow) kills pile up
+let camX = 0, camY = 0, shakeMag = 0, gameT = 0, supeTimer = 8, heliTimer = 10, starlightTimer = rand(260,280), jetTimer = rand(10,18), atrainTimer = rand(80,100), maeveTimer = rand(350,370), deepTimer = rand(40,70), lamplighterTimer = rand(170,190), newsTimer = rand(20, 35);
 let waterMayhem = 0;   // carnage caused in the water zone — this, not kills, is what wakes The Deep
 let deepArrivalT = -1;   // gameT the player first reached the dock — arms his fast first-spawn timer
 let trainTimer = rand(10,18), tankTimer = rand(18,28);
@@ -1126,11 +1190,13 @@ const SHARK_SCALE = 1.3;   // a bit bigger — easier to actually make out again
 const TANK_SCALE = 2.1;    // was barely readable next to everything else at street scale
 const DEEP_SCALE = 1.45;   // his submerged fin-and-shadow silhouette (his most common state) read too small
 const NPC_SCALE = 1.18;    // regular grunts/civs were drawn at literally the player's own unit scale but read smaller next to him
+const TOWER_TOP_ROWS = 8;   // how many rows count as "the top" for darkening the tower's golden V
 function destroyCell(b, i, wx, wy, quiet) {
   if (b.cells[i] >= 1) return;
   b.cells[i] = 1; b.destroyed++; b.dirty = true; b.supActive = true;
   addDamage(CELL_COST);
   const ci = i % b.cols, cj = Math.floor(i / b.cols);
+  if (b.isTower && cj < TOWER_TOP_ROWS) b.topDestroyed++;
   killWindowCiv(b, ci, cj);
   // each archetype breaks apart differently — same cell system underneath, different payoff
   if (b.archetype === 'glass') {
@@ -2072,28 +2138,21 @@ function update(dt) {
   // just one at a time, drifting in to film whatever's going on
   newsTimer -= dt;
   if (newsTimer <= 0 && !helis.some(h=>!h.dead && h.newsCrew)) { spawnHeli(true); newsTimer = rand(35, 60); }
-  // villain timers only start ticking once their kill threshold is reached — hitting the
-  // milestone kicks off the countdown, it isn't running quietly since the start of the game.
-  // debut order: A-Train, then Lamplighter, then Starlight, then Maeve — gates spaced further
-  // apart than before so the whole cast doesn't show up in a pile within the first few minutes
-  if (kills > 50) {
-    atrainTimer -= dt;
-    if (atrainTimer <= 0 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
-  }
+  // villain timers run off the clock from the moment the game starts, not off a kill milestone —
+  // their initial values (set at declaration, below) are staggered debut times instead of small
+  // random windows, so the cast enters one at a time spaced out by elapsed time: A-Train first,
+  // then Lamplighter, then Starlight, then Maeve. Kills no longer gate anything; only death resets
+  // a villain onto its normal (shorter) recurring window for every appearance after the debut.
+  atrainTimer -= dt;
+  if (atrainTimer <= 0 && atrains.length === 0) { spawnATrain(); atrainTimer = rand(60, 90); }
   jetTimer -= dt;
   if (jetTimer <= 0 && jets.filter(j=>!j.dead).length < 2) { spawnJet(); jetTimer = rand(18, 30); }
-  if (kills > 140) {
-    lamplighterTimer -= dt;
-    if (lamplighterTimer <= 0 && lamplighters.length === 0) { spawnLamplighter(); lamplighterTimer = rand(60, 90); }
-  }
-  if (kills > 240) {
-    starlightTimer -= dt;
-    if (starlightTimer <= 0 && !supes.some(s=>s.boss)) { spawnStarlight(); starlightTimer = rand(55, 85); }
-  }
-  if (kills > 350) {
-    maeveTimer -= dt;
-    if (maeveTimer <= 0 && maeves.length === 0) { spawnMaeve(); maeveTimer = rand(65, 95); }
-  }
+  lamplighterTimer -= dt;
+  if (lamplighterTimer <= 0 && lamplighters.length === 0) { spawnLamplighter(); lamplighterTimer = rand(60, 90); }
+  starlightTimer -= dt;
+  if (starlightTimer <= 0 && !supes.some(s=>s.boss)) { spawnStarlight(); starlightTimer = rand(55, 85); }
+  maeveTimer -= dt;
+  if (maeveTimer <= 0 && maeves.length === 0) { spawnMaeve(); maeveTimer = rand(65, 95); }
   // The Deep has no kill gate — his very first appearance is instead timed off first reaching
   // the dock at all (fast: 20-30s), rather than waiting on enough waterMayhem to pile up, which
   // could leave him absent for a long time if the player hadn't caused trouble in the water yet.
@@ -3719,11 +3778,16 @@ function drawCity() {
     // starts collapsing since we're already past that early-return above for that state.
     if (b.isTower) {
       // a peaked glass roof — a single gold "V"/chevron sitting flush on the roofline and sloping
-      // down to the eaves on either side, rather than a spire standing apart above the building
+      // down to the eaves on either side, rather than a spire standing apart above the building.
+      // enough damage to the tower's own top floors and the V loses power — reads as "knocked the
+      // lights out up there" instead of the logo just floating on top unaffected by the wreckage below it
+      const archDark = b.topDestroyed / (TOWER_TOP_ROWS*b.cols) > 0.3;
       const apexX = x + b.w*0.5, apexY = y - 145;
       const baseLX = x + b.w*0.06, baseRX = x + b.w*0.94, baseY = y - 6;
-      cx.fillStyle = 'rgba(232,192,74,0.18)';
-      cx.beginPath(); cx.arc(apexX, y-75, 100, 0, 7); cx.fill();
+      if (!archDark) {
+        cx.fillStyle = 'rgba(232,192,74,0.18)';
+        cx.beginPath(); cx.arc(apexX, y-75, 100, 0, 7); cx.fill();
+      }
       if (b.glassIntact) {
         const g = cx.createLinearGradient(apexX, apexY, apexX, baseY);
         g.addColorStop(0, 'rgba(190,230,255,0.6)'); g.addColorStop(1, 'rgba(140,195,225,0.3)');
@@ -3739,11 +3803,12 @@ function drawCity() {
         }
       }
       const bw = 12;
-      cx.fillStyle = '#e8c04a';
+      cx.fillStyle = archDark ? '#3a3428' : '#e8c04a';
       cx.beginPath(); cx.moveTo(apexX-bw, apexY); cx.lineTo(baseLX-bw, baseY); cx.lineTo(baseLX+bw, baseY); cx.lineTo(apexX+bw, apexY); cx.closePath(); cx.fill();
       cx.beginPath(); cx.moveTo(apexX-bw, apexY); cx.lineTo(baseRX-bw, baseY); cx.lineTo(baseRX+bw, baseY); cx.lineTo(apexX+bw, apexY); cx.closePath(); cx.fill();
-      // a thin brighter inset strip on each beam for a bit of metallic bevel
-      cx.fillStyle = 'rgba(255,240,190,0.55)';
+      // a thin brighter inset strip on each beam for a bit of metallic bevel — dulled to a flat
+      // ash tone along with the rest of the beam once the arch has gone dark
+      cx.fillStyle = archDark ? 'rgba(120,112,96,0.4)' : 'rgba(255,240,190,0.55)';
       const hb = 3;
       cx.beginPath(); cx.moveTo(apexX-bw+2, apexY-2); cx.lineTo(baseLX-bw+2, baseY+2); cx.lineTo(baseLX-bw+2+hb, baseY+2); cx.lineTo(apexX-bw+2+hb, apexY-2); cx.closePath(); cx.fill();
       cx.beginPath(); cx.moveTo(apexX+bw-2-hb, apexY-2); cx.lineTo(baseRX+bw-2-hb, baseY+2); cx.lineTo(baseRX+bw-2, baseY+2); cx.lineTo(apexX+bw-2, apexY-2); cx.closePath(); cx.fill();
@@ -4871,13 +4936,8 @@ function draw() {
     cx.shadowBlur = 0;
     cx.textAlign = 'left';
   }
-  if (paused) {
-    cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(0,0,VW,VH);
-    cx.fillStyle = '#f2ede2'; cx.font = 'bold 42px Georgia'; cx.textAlign = 'center';
-    cx.fillText('PAUSED', VW/2, VH/2);
-    cx.font = '16px Georgia'; cx.fillText('press P to resume', VW/2, VH/2+34);
-    cx.textAlign = 'left';
-  }
+  // pause dimming/text is now the #pauseMenu DOM overlay (controls, volume, restart) instead of
+  // drawn on the canvas — see setPaused()
 }
 
 // ─── Main loop ───
@@ -4960,6 +5020,16 @@ for (let i=0;i<60;i++) spawnCiv();
 for (let i=0;i<18;i++) spawnCar();
 for (let i=0;i<3;i++) spawnBirdFlock();
 setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 16000);
+
+// ─── Pause menu wiring ───
+document.getElementById('resumeBtn').addEventListener('click', () => setPaused(false));
+document.getElementById('muteBtn').addEventListener('click', () => setMuted(!muted));
+document.getElementById('restartBtn').addEventListener('click', () => location.reload());
+document.getElementById('volSlider').addEventListener('input', e => {
+  volume = e.target.value / 100;
+  if (master) master.gain.value = volume;
+});
+
 if (!isMobile) requestAnimationFrame(frame);
 </script>
 </body>
