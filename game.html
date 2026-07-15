@@ -260,10 +260,11 @@ function roofChunkPop(rc, wx, wy) {
     const archRoll = Math.random();
     const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
     const roofStyle = pickRoofStyle(archetype), rubbleSeed = Math.random();
+    const hasWatertower = w > 200 && Math.random()<0.08;
     fgBuildings.push({x, w, h, cols, rows, roofY: GROUND_Y-h, shade: randi(0,2), wins, cells,
       destroyed: 0, collapsed: false, rubbleSeed, dirty: false, supActive: false, supT: 0,
       ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,w-50) : -1, burning: Math.random()<0.07,
-      watertower: w > 200 && Math.random()<0.08, archetype, roofStyle, roofChunks: makeRoofChunks(w, roofStyle, rubbleSeed)});
+      watertower: hasWatertower, wtFloodT: 0, archetype, roofStyle, roofChunks: makeRoofChunks(w, roofStyle, rubbleSeed)});
     x += w + rand(180, 460);
   }
 })();
@@ -286,7 +287,7 @@ function applyTowerFields(b) {
     if (Math.random()<0.6) wins.push({c, r, warm:Math.random()<0.8, civ:false});
   Object.assign(b, {
     h, rows, roofY: GROUND_Y - h, cells, wins, shade: 0, archetype: 'tower', roofStyle: null, roofChunks: [],
-    ant: false, ac: -1, watertower: false, burning: false,
+    ant: false, ac: -1, watertower: false, wtFloodT: 0, burning: false,
     destroyed: 0, collapsed: false, collapsing: false, rubbleSeed: Math.random(), dirty: false, supActive: false, supT: 0,
     isTower: true, glassIntact: true, glassHitT: 0, collapsedAtT: undefined, topDestroyed: 0
   });
@@ -318,11 +319,12 @@ function respawnBuilding(b) {
   const archRoll = Math.random();
   const archetype = archRoll < 0.15 ? 'glass' : archRoll < 0.3 ? 'brick' : archRoll < 0.4 ? 'construction' : null;
   const roofStyle = pickRoofStyle(archetype), rubbleSeed = Math.random();
+  const hasWatertower = b.w > 200 && Math.random()<0.08;
   Object.assign(b, {
     h, rows, roofY: GROUND_Y-h, cells, wins, shade: randi(0,2),
     destroyed: 0, collapsed: false, collapsing: false, rubbleSeed, dirty: false, supActive: false, supT: 0,
     ant: Math.random()<0.4, ac: Math.random()<0.6 ? rand(20,b.w-50) : -1, burning: Math.random()<0.07,
-    watertower: b.w > 200 && Math.random()<0.08, archetype, roofStyle, roofChunks: makeRoofChunks(b.w, roofStyle, rubbleSeed),
+    watertower: hasWatertower, wtFloodT: 0, archetype, roofStyle, roofChunks: makeRoofChunks(b.w, roofStyle, rubbleSeed),
     collapsedAtT: undefined, respawnGate: undefined
   });
 }
@@ -381,6 +383,37 @@ function hydrantBoom(p) {
   p.geyserT = rand(3.5, 5);
   splash(p.x, 260);
   sfxCrack();
+}
+// world-space position of a building's rooftop water tower — shared by the hit-detection below
+// and the draw code, so they can never drift out of sync with each other
+function watertowerPos(b) { return { x: b.x + b.w*0.72, y: b.roofY - 34 }; }
+let floodingBuildings = [];   // buildings whose water tower just popped — draining a trickle down the side
+function waterTowerPop(b) {
+  if (!b.watertower) return;
+  b.watertower = false;
+  b.wtFloodT = rand(4, 6);
+  floodingBuildings.push(b);
+  const { x: wx, y: wy } = watertowerPos(b);
+  for (let i=0;i<7;i++) debris.push({ x: wx+rand(-10,10), y: wy+rand(-6,6), vx: rand(-140,140), vy: rand(-220,-40),
+    rot: rand(0,7), vr: rand(-8,8), r: rand(2.5,5), c: '#3a3142', life: rand(0.8,1.6) });
+  for (let i=0;i<16;i++) sparks.push({ x: wx+rand(-14,14), y: wy+rand(-8,8), vx: rand(-140,140), vy: rand(-260,-40),
+    life: rand(0.3,0.6), c: Math.random()<0.5 ? '#bfe2f2' : '#e8f6fc' });
+  splash(wx, 600);
+  shake(9); sfxBoom();
+}
+// ─── Dock gantry cranes: destructible landmarks that topple and crush whatever's under the boom ───
+let cranes = [];
+function spawnCrane(x) {
+  cranes.push({ x, hp: 700, maxHp: 700, dead: false, toppling: false, toppleAngle: 0, toppleDir: 1, swept: false, respawnT: 0 });
+}
+spawnCrane(WATER_X - 650);
+spawnCrane(CITY_W + 420);
+function craneTopple(cr) {
+  if (cr.toppling || cr.dead) return;
+  cr.toppling = true; cr.toppleAngle = 0; cr.swept = false;
+  cr.toppleDir = Math.random()<0.5 ? -1 : 1;
+  shake(20); sfxBoom(); thump(40, 0.6, 0.4);
+  for (let i=0;i<16;i++) smokes.push({ x: cr.x+rand(-30,30), y: GROUND_Y-rand(0,40), r: rand(14,30), vr: rand(30,60), vy: rand(-40,-10), life: rand(0.8,1.5), c:'rgba(120,110,100,' });
 }
 // ─── Dock containers: destructible stacked props — cuttable, dashable, topple and crush ───
 const containers = [];
@@ -774,6 +807,15 @@ function thunderclap(chargeFrac) {
   // detonate incoming rockets/fireballs mid-air
   for (const r of rockets) if (dist2(r.x,r.y,P.x,P.y) < (R*1.2)*(R*1.2)) { r.gone = true; explode(r.x, r.y, 46, 0, true); }
   for (const fb of fireballs) if (dist2(fb.x,fb.y,P.x,P.y) < (R*1.2)*(R*1.2)) fb.life = 0;
+  for (const b of fgBuildings) {
+    if (!b.watertower || b.collapsed || b.collapsing) continue;
+    const wt = watertowerPos(b);
+    if (dist2(wt.x,wt.y,P.x,P.y) < R*R) waterTowerPop(b);
+  }
+  for (const cr of cranes) if (!cr.dead && !cr.toppling && dist2(cr.x,GROUND_Y-200,P.x,P.y) < R*R) {
+    cr.hp -= 180*dmgMult;
+    if (cr.hp <= 0) craneTopple(cr);
+  }
   damageCellsInRadius(P.x, P.y, 140*(1+f*0.5), 0.7 + f*0.3);
   panicNear(P.x, 800*(1+f*0.3));
 }
@@ -1521,6 +1563,16 @@ function update(dt) {
       if (p.type === 'light' && dist2(P.x,P.y,p.x,GROUND_Y-118) < 60*60) streetLightBoom(p);
       else if (p.type === 'hydrant' && p.geyserT <= 0 && dist2(P.x,P.y,p.x,GROUND_Y-10) < 50*50) hydrantBoom(p);
     }
+    // rooftop water towers — same one-hit pop as a streetlight, just up on the roof
+    for (const b of fgBuildings) {
+      if (!b.watertower || b.collapsed || b.collapsing) continue;
+      const wt = watertowerPos(b);
+      if (dist2(P.x,P.y,wt.x,wt.y) < 50*50) waterTowerPop(b);
+    }
+    for (const cr of cranes) if (!cr.dead && !cr.toppling && dist2(P.x,P.y,cr.x,GROUND_Y-200) < 60*60) {
+      cr.hp -= 320*DASH_DMG_MULT;
+      if (cr.hp <= 0) craneTopple(cr);
+    }
     // destructible roofline pieces — a dash through one pops it instantly, same as a streetlight
     for (const b of fgBuildings) {
       if (b.collapsed || b.collapsing || !b.roofChunks.length) continue;
@@ -2081,6 +2133,15 @@ function update(dt) {
       if (p.type === 'light' && segDist(p.x, GROUND_Y-118, ex, ey, beamEndX, beamEndY) < 12) streetLightBoom(p);
       else if (p.type === 'hydrant' && p.geyserT <= 0 && segDist(p.x, GROUND_Y-10, ex, ey, beamEndX, beamEndY) < 14) hydrantBoom(p);
     }
+    for (const b of fgBuildings) {
+      if (!b.watertower || b.collapsed || b.collapsing) continue;
+      const wt = watertowerPos(b);
+      if (segDist(wt.x, wt.y, ex, ey, beamEndX, beamEndY) < 20) waterTowerPop(b);
+    }
+    for (const cr of cranes) if (!cr.dead && !cr.toppling && segDist(cr.x, GROUND_Y-200, ex, ey, beamEndX, beamEndY) < 30) {
+      cr.hp -= 450*dt*LASER_DMG_MULT;
+      if (cr.hp <= 0) craneTopple(cr);
+    }
     // destructible roofline pieces — sustained beam contact wears a chunk's hp down and pops it,
     // same "chip away, don't just instant-pop" treatment containers/tanks already get
     for (const b of fgBuildings) {
@@ -2500,6 +2561,40 @@ function update(dt) {
     if (Math.random() < dt*30) sparks.push({ x: p.x+rand(-4,4), y: GROUND_Y-8, vx: rand(-30,30), vy: -rand(160,320),
       life: rand(0.3,0.6), c: Math.random()<0.5 ? '#bfe2f2' : '#e8f6fc' });
     if (p.geyserT <= 0) p.dead = true;
+  }
+  // ── popped water towers: a draining trickle runs down the building for a few seconds ──
+  for (const b of floodingBuildings) {
+    b.wtFloodT -= dt;
+    if (b.wtFloodT > 0 && !b.collapsed && Math.random() < dt*22) {
+      const { x: wx } = watertowerPos(b);
+      sparks.push({ x: wx+rand(-8,8), y: b.roofY+rand(20, Math.min(b.h, 300)), vx: rand(-6,6), vy: rand(60,130),
+        life: rand(0.3,0.5), c: '#bfe2f2' });
+    }
+  }
+  floodingBuildings = floodingBuildings.filter(b => b.wtFloodT > 0 && !b.collapsed);
+  // ── dock gantry cranes: topple animation, one damage sweep partway through, then respawn ──
+  for (const cr of cranes) {
+    if (cr.dead) {
+      cr.respawnT -= dt;
+      if (cr.respawnT <= 0) { cr.dead = false; cr.toppling = false; cr.toppleAngle = 0; cr.hp = cr.maxHp; }
+      continue;
+    }
+    if (!cr.toppling) continue;
+    cr.toppleAngle = Math.min(1.35, cr.toppleAngle + dt*1.6);
+    if (!cr.swept && cr.toppleAngle > 0.5) {
+      cr.swept = true;
+      const sweepX0 = cr.x + (cr.toppleDir>0 ? 0 : -350), sweepX1 = cr.x + (cr.toppleDir>0 ? 350 : 0);
+      for (const car of cars) if (!car.dead && car.x > sweepX0-30 && car.x < sweepX1+30) carBoom(car);
+      for (const g of grunts) if (!g.dead && g.x > sweepX0-20 && g.x < sweepX1+20) { g.dead=true; gibBurst(g.x,g.y-16,1.4,false); addKill(); }
+      for (const c of civs) if (!c.dead && c.x > sweepX0-20 && c.x < sweepX1+20) { c.dead=true; gibBurst(c.x,c.y-14,1.2,false); addKill(true); }
+      for (const ct of containers) if (!ct.dead && ct.x+ct.w > sweepX0-20 && ct.x < sweepX1+20) containerBoom(ct);
+      shake(14); sfxCrack();
+      for (let i=0;i<10;i++) debris.push({ x: cr.x+rand(-40,40)*cr.toppleDir, y: GROUND_Y-20, vx: rand(-100,100), vy: -rand(60,160), rot: rand(0,7), vr: rand(-6,6), r: rand(3,7), c: '#8a6a20', life: rand(0.8,1.6) });
+    }
+    if (cr.toppleAngle >= 1.35) {
+      cr.dead = true; cr.respawnT = rand(45, 70);
+      bakeScorch(cr.x, GROUND_Y, 70);
+    }
   }
   // ── dock containers: gravity-settle onto the stack (or dock) below, crush on landing ──
   // this used to re-scan every OTHER container to find a rest height on every single container,
@@ -3802,6 +3897,13 @@ function drawCity() {
       cx.beginPath(); cx.ellipse(wtx, y-34, 17, 9, 0, 0, 7); cx.fill();
       cx.fillRect(wtx-17, y-42, 34, 17);
       cx.beginPath(); cx.ellipse(wtx, y-42, 17, 8, 0, 0, 7); cx.fill();
+    } else if (b.wtFloodT > 0) {
+      // a popped water tower drains a dark, glistening streak down the building for a while
+      // instead of the roofline just going quietly bare
+      const wtx = x + b.w*0.72, streakH = Math.min(b.h, 300) * clamp(b.wtFloodT/2, 0, 1);
+      const g = cx.createLinearGradient(wtx, y, wtx, y+streakH);
+      g.addColorStop(0, 'rgba(140,190,215,0.5)'); g.addColorStop(1, 'rgba(140,190,215,0)');
+      cx.fillStyle = g; cx.fillRect(wtx-4, y, 8, streakH);
     }
     // roofline caps — now individually destructible: each piece is a chunk in b.roofChunks with
     // its own hp, and drawing checks `dead` per-chunk instead of drawing the whole cap as one
@@ -3903,26 +4005,32 @@ function drawCity() {
       cx.fillRect(sx-4, gy-13, 8, 13);
       cx.beginPath(); cx.arc(sx, gy-13, 5, Math.PI, 0); cx.fill();
     }
-    // gantry cranes — bright industrial yellow so they read clearly against the dark dock/sky
-    for (const crBase of [WATER_X - 650, CITY_W + 420]) {
-      const crX = crBase - camX;
+    // gantry cranes — bright industrial yellow so they read clearly against the dark dock/sky.
+    // destructible: rotates around its own base pivot while toppling, drawn in local space so
+    // the whole rig topples as one rigid piece instead of each part rotating independently
+    for (const cr of cranes) {
+      if (cr.dead) continue;
+      const crX = cr.x - camX;
       if (crX < -400 || crX > VW+400) continue;
+      cx.save(); cx.translate(crX, gy);
+      if (cr.toppling) cx.rotate(cr.toppleAngle * cr.toppleDir);
       cx.strokeStyle = '#d9a83c'; cx.lineWidth = 10;
-      cx.beginPath(); cx.moveTo(crX, gy); cx.lineTo(crX, gy-420); cx.stroke();
+      cx.beginPath(); cx.moveTo(0, 0); cx.lineTo(0, -420); cx.stroke();
       cx.lineWidth = 7;
-      cx.beginPath(); cx.moveTo(crX-150, gy-390); cx.lineTo(crX+330, gy-390); cx.stroke();
+      cx.beginPath(); cx.moveTo(-150, -390); cx.lineTo(330, -390); cx.stroke();
       cx.lineWidth = 3; cx.strokeStyle = '#8a6a20';
       cx.beginPath();
-      cx.moveTo(crX, gy-420); cx.lineTo(crX+320, gy-392);
-      cx.moveTo(crX, gy-420); cx.lineTo(crX-140, gy-392);
-      cx.moveTo(crX+230, gy-388); cx.lineTo(crX+230, gy-160);
+      cx.moveTo(0, -420); cx.lineTo(320, -392);
+      cx.moveTo(0, -420); cx.lineTo(-140, -392);
+      cx.moveTo(230, -388); cx.lineTo(230, -160);
       cx.stroke();
       cx.fillStyle = '#1a1610';
-      cx.fillRect(crX-24, gy-372, 48, 34);                       // operator cab
-      cx.fillStyle = 'rgba(180,200,215,0.55)'; cx.fillRect(crX-19, gy-368, 38, 14);   // cab window
-      cx.fillStyle = '#1a1610'; cx.fillRect(crX+218, gy-162, 24, 18);                 // hook block
+      cx.fillRect(-24, -372, 48, 34);                       // operator cab
+      cx.fillStyle = 'rgba(180,200,215,0.55)'; cx.fillRect(-19, -368, 38, 14);   // cab window
+      cx.fillStyle = '#1a1610'; cx.fillRect(218, -162, 24, 18);                 // hook block
       cx.fillStyle = 'rgba(255,60,60,'+(0.4+0.5*Math.abs(Math.sin(gameT*2.4)))+')';
-      cx.beginPath(); cx.arc(crX, gy-424, 3.5, 0, 7); cx.fill(); // beacon
+      cx.beginPath(); cx.arc(0, -424, 3.5, 0, 7); cx.fill(); // beacon
+      cx.restore();
     }
     // shipping containers
     for (const ct of containers) {
